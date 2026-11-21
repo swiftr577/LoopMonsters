@@ -73,7 +73,7 @@ h2{font-size:18px;font-weight:800;margin:0}
 #reclabel{font-size:15px}
 #rec .ring{position:absolute;inset:-16px;width:calc(100% + 32px);height:calc(100% + 32px);transform:rotate(-90deg);pointer-events:none}
 #rec .ring circle{fill:none;stroke:var(--sun);stroke-width:7;stroke-linecap:round;stroke-dasharray:465;stroke-dashoffset:465}
-#rec.recording .ring circle{animation:count 10s linear forwards}
+#rec.recording .ring circle{animation:count var(--secs,10s) linear forwards}
 #rec.recording{background:#D81F3A;transform:translateY(5px);box-shadow:0 2px 0 var(--line)}
 #rec.busy{opacity:.7}
 @keyframes count{from{stroke-dashoffset:465}to{stroke-dashoffset:0}}
@@ -142,8 +142,14 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       <p>How often it plays</p>
       <div class="chips" id="rhythms"></div>
     </div>
-    <p>Voice</p>
-    <div class="chips" id="voices"></div>
+    <div id="instopts">
+      <p>Instrument</p>
+      <div class="chips" id="insts"></div>
+    </div>
+    <div id="voiceopts">
+      <p>Voice</p>
+      <div class="chips" id="voices"></div>
+    </div>
     <div class="chips" style="margin-bottom:0">
       <button class="btn small" id="echo" aria-pressed="false">🏔️ Echo</button>
       <button class="btn small" id="mute">😴 Sleep</button>
@@ -152,6 +158,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
   </section>
 
   <div class="recwrap">
+    <div class="chips" id="kinds" style="justify-content:center;margin-bottom:26px" aria-label="What to record"></div>
     <button id="rec" aria-label="Hold to record your voice">
       <svg class="ring" viewBox="0 0 160 160" aria-hidden="true"><circle cx="80" cy="80" r="74"/></svg>
       <svg class="mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
@@ -235,7 +242,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.4.1';   // bump this with each release
+const VERSION = '1.7.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -299,7 +306,13 @@ const VOICES = [
   {name:'Monster',icon:'👹',rate:.62,shift:-12},
   {name:'Robot',icon:'🤖',rate:1,shift:0,robot:true}
 ];
-const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
+const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
+const MODES_MUSIC = [{name:'Fit to beat',icon:'🎯',id:'fit'},{name:'Chop up',icon:'✂️',id:'chop'},{name:'As recorded',icon:'📼',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
+const KINDS = [{name:'Voice',icon:'🗣️',id:'voice',secs:10},{name:'Music',icon:'🎸',id:'music',secs:16}];
+const INSTS = [
+  {name:'Piano',icon:'🎹',wave:'triangle',vol:.3,cut:3000,att:.005},{name:'Synth',icon:'🎛️',wave:'sawtooth',vol:.15,cut:2500,att:.01},
+  {name:'Flute',icon:'🪈',wave:'sine',vol:.34,cut:5000,att:.04},{name:'Game',icon:'👾',wave:'square',vol:.12,cut:3500,att:.005}
+];
 const PARTS = [
   {id:'drums',name:'Drums',icon:'🥁',on:true},{id:'bass',name:'Bass',icon:'🎸',on:true},
   {id:'chords',name:'Keyboard',icon:'🎹',on:true},{id:'tune',name:'Tune helper',icon:'🎼',on:true},
@@ -310,13 +323,14 @@ const KEYS = [{name:'Auto',id:'auto'},{name:'Piano',id:'triangle'},{name:'Synth'
 const COLORS = ['#FF6B6B','#FFC93C','#2EC4B6','#9C84FF','#FF8FD8','#5BC0FF','#8BD450','#FF9F43'];
 const SHAPES = ['50%','38% 62% 55% 45%','22px','60% 40% 40% 60%','50% 50% 30% 30%','30% 70% 50% 50%'];
 const EYES = [2,1,3,2];
-const MAX_LAYERS = 6, MAX_REC = 10;
+const MAX_LAYERS = 6;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 let ctx, beatBus, sampleBus, duck, noiseBuf, echoIn, echoDelay;
 let style = STYLES[0], tempo = style.bpm, keySound = 0, playing = false, step = 0, nextT = 0, timer = null, vis = [];
 const parts = {}; PARTS.forEach(p => parts[p.id] = p.on);
 let layers = [], selId = null, uid = 0, colorIx = 0;
+let recKind = 0, takeKind = 'voice';
 let recState = 'idle', stream = null, rec = null, chunks = [], recTimer = null;
 
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
@@ -371,13 +385,13 @@ function analyse(x, sr){
   };
   runs.forEach(r => split(r[0], r[1]));
   const hopS = hop * D, offS = win * D / 2, voiced = Array.from(f0).filter(f => f > 0), all = median(voiced);
-  let segs = pieces.slice(0, 32).map(p => ({
+  let segs = pieces.slice(0, 64).map(p => ({
     a: Math.max(0, Math.floor(p[0] * hopS - .005 * sr)),
     b: Math.min(x.length, Math.floor(p[1] * hopS + offS + .02 * sr)),
     med: median(Array.from(f0.subarray(p[0], p[1])).filter(f => f > 0))
   }));
   if (!segs.length) segs = [{a:0, b:x.length, med:all}];
-  return {data:x, sr, f0, hopS, offS, segs, center: all ? 69 + 12 * Math.log2(all / 440) : 60, cache:new Map()};
+  return {data:x, sr, f0, rms, thr, hopS, offS, segs, center: all ? 69 + 12 * Math.log2(all / 440) : 60, cache:new Map()};
 }
 /* Hard-tune one piece to a note: read it faster or slower, moment by moment, so its pitch stays flat on the target. */
 function tuneData(T, si, midi){
@@ -403,6 +417,37 @@ function tuneData(T, si, midi){
   for (let i = 0; i < fo; i++) out[out.length - 1 - i] *= i / fo;
   return out;
 }
+/* Turn a hummed or beatboxed take into notes and drum hits. Each 10 ms slice is either a pitch (pulled onto the key),
+   a noise (beatbox), or silence; runs of the same thing become one note, and blips are smoothed away. */
+function transcribe(T, pcs){
+  const runs = [], fs = T.hopS / T.sr; let cur = null;
+  for (let j = 0; j < T.f0.length; j++){
+    const loud = T.rms[j] > T.thr, f = T.f0[j];
+    const m = !loud ? null : f ? snap(69 + 12 * Math.log2(f / 440), pcs) : -1;
+    if (cur && cur.m === m){ cur.n++; continue; }
+    if (cur) runs.push(cur);
+    cur = m === null ? null : {m, j, n:1};
+  }
+  if (cur) runs.push(cur);
+  const notes = [];
+  runs.forEach(o => {
+    const prev = notes[notes.length - 1], adj = prev && prev.m >= 0 && prev.j + prev.n >= o.j - 2;
+    if (o.m < 0){ if (o.n >= 3) notes.push(o); return; }
+    if (o.n < 6 || (adj && prev.m === o.m)){ if (adj) prev.n = o.j + o.n - prev.j; return; }
+    notes.push(o);
+  });
+  return notes.map(o => {
+    if (o.m >= 0) return {at: o.j * fs, dur: o.n * fs, midi: o.m};
+    const a = Math.floor(o.j * T.hopS), b = Math.min(T.data.length, a + Math.floor(o.n * T.hopS));
+    const share = w => {                                    // how much of the sound's energy sits below roughly sr / w hertz
+      let run = 0, lo = 0, all = 0;
+      for (let i = a; i < b; i++){ run += T.data[i]; if (i - w >= a) run -= T.data[i - w]; const v = run / w; lo += v * v; all += T.data[i] * T.data[i]; }
+      return all ? lo / all : 0;
+    };
+    // mostly deep rumble = kick, mostly hiss = hi-hat, in between = snare
+    return {at: o.j * fs, drum: share(Math.round(T.sr / 400)) > .2 ? 'k' : share(Math.round(T.sr / 2000)) < .35 ? 'h' : 's'};
+  });
+}
 /*ENDDSP*/
 function tuned(T, si, midi){
   const key = si + '/' + midi; let b = T.cache.get(key);
@@ -416,6 +461,9 @@ function tuned(T, si, midi){
 /* Make up a four-bar tune (when to sing, and how far up or down) and hand out the syllables in order. */
 function rng(a){ return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 function arrange(L){
+  const pr = rng(L.seed ^ 0x5bd1e995);                      // chop pattern: mostly in order, sometimes a surprise slice
+  L.pat = Array.from({length:64}, () => pr() < .6 ? -1 : pr());
+  L.ev = {}; if (!L.take) return;
   const rnd = rng(L.seed), R = [[0,2,4,6,8,12],[0,3,6,8,10,12,14],[0,4,6,8,10,12],[2,4,6,8,12,14],[0,2,3,6,8,10,12]];
   const rA = R[rnd() * R.length | 0], rB = R[rnd() * R.length | 0], end = [0,2,4,8], moves = [-1,-1,0,1,1,2,-2], mel = [];
   let w = 0;
@@ -429,6 +477,16 @@ function arrange(L){
   }
   L.ev = {}; let si = 0;
   for (let rep = 0; rep < 2; rep++) mel.forEach(m => { L.ev[rep * 64 + m.st] = {len:m.len, off:m.off, si: si++ % L.take.segs.length}; });
+}
+/* Auto-tune: the notes of the beat's key that always sound good (a five-note scale), and the nearest one to a pitch. */
+function keyScale(S){
+  const tonic = S.prog.find(p => p[0] === 0), minor = !tonic || tonic[1][0] === 'm' || tonic[1] === '5';
+  return (minor ? [0,3,5,7,10] : [0,2,4,7,9]).map(x => (S.key + x) % 12);
+}
+function snap(midi, pcs){
+  let best = Math.round(midi), d = 99;
+  for (let m = Math.floor(midi) - 6; m <= midi + 6; m++) if (pcs.includes(m % 12) && Math.abs(m - midi) < d){ d = Math.abs(m - midi); best = m; }
+  return best;
 }
 function ladder(root, type, center){
   const pcs = CHORDS[type].map(iv => (root + iv) % 12), c = Math.round(center), notes = [];
@@ -481,7 +539,7 @@ function perc(t){
   const g = ctx.createGain(); decay(g, t, .2, .09); g.connect(beatBus);
   [587, 845].forEach(fr => { const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = fr; o.connect(g); o.start(t); o.stop(t + .1); });
 }
-function tone(t, midi, dur, wave, peak, cutoff, attack){
+function tone(t, midi, dur, wave, peak, cutoff, attack, out){
   attack = attack || .005;
   const o = ctx.createOscillator(); o.type = wave; o.frequency.value = mtof(midi);
   const f = ctx.createBiquadFilter(); f.type = 'lowpass';
@@ -489,7 +547,8 @@ function tone(t, midi, dur, wave, peak, cutoff, attack){
   const g = ctx.createGain();
   g.gain.setValueAtTime(.0001, t); g.gain.linearRampToValueAtTime(peak, t + attack);
   g.gain.setValueAtTime(peak, t + Math.max(attack, dur * .6)); g.gain.exponentialRampToValueAtTime(.001, t + dur);
-  o.connect(f); f.connect(g); g.connect(beatBus); o.start(t); o.stop(t + dur + .02);
+  o.connect(f); f.connect(g); g.connect(out || beatBus); o.start(t); o.stop(t + dur + .02);
+  return g;
 }
 
 function scheduleStep(n, t){
@@ -545,11 +604,53 @@ function scheduleStep(n, t){
       choke(L, t); playBuf(L, L.buf, t, VOICES[L.voice].rate, 1); vis.push({t, id:L.id});
     }
   });
-  /* as recorded: the whole take, untuned, repeating every 1, 2, 4 or 8 bars, whichever it fits in */
+  /* as recorded, or auto-tuned: the whole take in its own timing, repeating every 1, 2, 4 or 8 bars, whichever it fits in.
+     Auto-tune keeps each syllable where it was spoken but pulls its pitch onto the nearest note of the beat's key. */
   if (s === 0) layers.forEach(L => {
-    if (L.mode !== 'plain' || L.muted) return;
-    const rate = VOICES[L.voice].rate, need = L.buf.duration / rate / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8;
-    if (bar8 % bars === 0){ choke(L, t); playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); }
+    if ((L.mode !== 'plain' && L.mode !== 'tune') || L.muted) return;
+    const V = VOICES[L.voice], rate = L.mode === 'plain' ? V.rate : 1;
+    const need = L.buf.duration / rate / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8;
+    if (bar8 % bars) return;
+    choke(L, t);
+    if (L.mode === 'plain'){ playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); return; }
+    const pcs = keyScale(S);
+    L.take.segs.forEach((g, i) => {
+      const at = t + g.a / L.take.sr, m = g.med ? snap(69 + 12 * Math.log2(g.med / 440), pcs) : 60;
+      playBuf(L, tuned(L.take, i, m + V.shift), at, 1, 1); vis.push({t:at, id:L.id});
+    });
+  });
+  /* instrument: the hummed tune played as notes (and beatbox noises as drums), snapped to the key and to the beat grid */
+  layers.forEach(L => {
+    if (L.muted || L.mode !== 'inst' || !L.take) return;
+    const pcs = keyScale(S), key = pcs.join();
+    if (L.nkey !== key){ L.nkey = key; L.notes = transcribe(L.take, pcs); }
+    const need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8) * 16, I = INSTS[L.inst || 0];
+    L.notes.forEach(o => {
+      if (Math.round(o.at / sd) % period !== n % period) return;
+      if (o.drum){ if (o.drum === 'k') kick(t); else if (o.drum === 's') snare(t); else hat(t, 1); }
+      else {
+        let m = o.midi; while (m < 55) m += 12; while (m > 84) m -= 12;
+        const g = tone(t, m, clamp(o.dur, sd * 1.5, sd * 16), I.wave, I.vol, I.cut, I.att, sampleBus);
+        if (L.echo) g.connect(echoIn);
+      }
+      vis.push({t, id:L.id});
+    });
+  });
+  /* recorded music, resampled: played faster or slower so it lasts a whole number of bars (or beats) and loops in time.
+     Chop up plays it as half-beat slices, following the monster's chop pattern. */
+  layers.forEach(L => {
+    if (L.muted || (L.mode !== 'fit' && L.mode !== 'chop')) return;
+    const len = L.buf.duration, bar = sd * 16;
+    let bars = 8, best = 99;
+    [.25,.5,1,2,4,8].forEach(b => { const d = Math.abs(Math.log(len / (b * bar))); if (d < best){ best = d; bars = b; } });
+    const period = bars * 16, rate = len / (bars * bar), at = n % period;
+    if (L.mode === 'fit'){
+      if (at === 0){ choke(L, t); playBuf(L, L.buf, t, rate, 1); }
+      if (s % 4 === 0) vis.push({t, id:L.id});
+    } else if (s % 2 === 0){
+      const N = period / 2, ix = at / 2, p = L.pat[ix % 64], slice = p < 0 ? ix : Math.floor(p * N);
+      choke(L, t); playBuf(L, L.buf, t, rate, 1, sd * 2, slice * len / N); vis.push({t, id:L.id});
+    }
   });
   vis.push({t, step:n});
 }
@@ -558,7 +659,7 @@ function choke(L, t){
   L.cur.forEach(c => { try { c.g.gain.setTargetAtTime(0, t, .008); c.src.stop(t + .06); } catch(e){} });
   L.cur = [];
 }
-function playBuf(L, buf, t, rate, vol, dur){
+function playBuf(L, buf, t, rate, vol, dur, off){
   const src = ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
   const g = ctx.createGain(); g.gain.value = vol;
   if (VOICES[L.voice].robot){
@@ -568,7 +669,7 @@ function playBuf(L, buf, t, rate, vol, dur){
     lfo.start(t); lfo.stop(t + buf.duration / rate + .1);
   } else src.connect(g);
   g.connect(sampleBus); if (L.echo) g.connect(echoIn);
-  src.start(t);
+  src.start(t, off || 0);
   if (dur){ g.gain.setTargetAtTime(0, t + dur, .03); src.stop(t + dur + .2); }
   L.cur.push({src, g});
 }
@@ -607,7 +708,10 @@ async function beginRec(){
   try {
     await wake();
     if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('unsupported');
-    stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true}});
+    takeKind = KINDS[recKind].id;
+    stream = await navigator.mediaDevices.getUserMedia({audio: takeKind === 'music'
+      ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false}   // phone call clean-up mangles music
+      : {echoCancellation:true}});
     if (ctx.state !== 'running') await ctx.resume();
   } catch(e){
     recState = 'idle'; drawRec();
@@ -622,11 +726,11 @@ async function beginRec(){
   rec = new MediaRecorder(stream);
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = recDone;
-  duck.gain.setTargetAtTime(.08, ctx.currentTime, .03);
+  duck.gain.setTargetAtTime(takeKind === 'music' ? 0 : .08, ctx.currentTime, .03);   // silent while sampling music
   rec.start(); recStart = performance.now();
   recState = 'recording'; drawRec();
   say('Listening… let go when you are done!');
-  recTimer = setTimeout(stopRec, MAX_REC * 1000);
+  recTimer = setTimeout(stopRec, KINDS[recKind].secs * 1000);
 }
 function endRec(){ holding = false; stopRec(); }
 function stopRec(){
@@ -643,7 +747,7 @@ async function recDone(){
     const ab = await new Blob(chunks, {type: rec.mimeType}).arrayBuffer();
     const raw = await new Promise((res, rej) => ctx.decodeAudioData(ab, res, rej));
     const buf = trim(raw);
-    if (buf) addLayer(buf, 'sing'); else say("Couldn't hear that one. Try again, a bit louder!");
+    if (buf) addLayer(buf, takeKind === 'music' ? 'fit' : 'sing', takeKind); else say("Couldn't hear that one. Try again, a bit louder!");
   } catch(e){ say("That recording didn't work. Hold the button to try again."); }
   chunks = []; recState = 'idle'; drawRec();
 }
@@ -680,16 +784,18 @@ function sillyBuf(kind){
   }
   return b;
 }
-function addLayer(buf, mode){
+function addLayer(buf, mode, kind){
+  kind = kind || 'voice';
   if (layers.length >= MAX_LAYERS){ say('The stage is full. Remove a monster to make room.'); return; }
-  const L = {id: uid++, buf, take: analyse(buf.getChannelData(0), buf.sampleRate), mode,
+  const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), buf.sampleRate), mode,
     rhythm: buf.duration > stepDur() * 16 ? 0 : 1, voice: 0, muted: false, harmony: false, echo: false,
     seed: Math.random() * 1e9 | 0, look: colorIx++, cur: []};
   arrange(L);
   layers.push(L); selId = L.id;
   drawLayers();
   const singers = layers.filter(l => l.mode === 'sing').length;
-  say(mode === 'sing' ? (singers > 1 ? 'Now your monsters take turns singing!' : "That's your song! Tap the monster to change it, or hear it as recorded.")
+  if (kind === 'music') say('Your music is looping in time with the beat! Tap the monster to chop it up.');
+  else say(mode === 'sing' ? (singers > 1 ? 'Now your monsters take turns singing!' : "That's your song! Tap the monster to change it, or try Auto-tune or Instrument.")
                       : 'Added! Tap the monster to change it.');
   if (!playing) start();
 }
@@ -733,6 +839,13 @@ function chipRow(el, items, isOn, pick){
     el.appendChild(b);
   });
 }
+function drawKinds(){
+  chipRow($('#kinds'), KINDS, i => i === recKind, i => {
+    if (recState !== 'idle') return;
+    recKind = i; $('#rec').style.setProperty('--secs', KINDS[i].secs + 's'); drawKinds();
+    say(i ? 'Music: hold the button near the music for up to 16 seconds.' : 'Voice: hold the button and say something.');
+  });
+}
 function drawBand(){
   chipRow($('#parts'), PARTS, i => parts[PARTS[i].id], i => { parts[PARTS[i].id] = !parts[PARTS[i].id]; drawBand(); });
   chipRow($('#keys'), KEYS, i => i === keySound, i => { keySound = i; drawBand(); });
@@ -758,8 +871,14 @@ const sel = () => layers.find(l => l.id === selId);
 function drawPanel(){
   const L = sel(), p = $('#panel');
   p.hidden = !L; if (!L) return;
-  chipRow($('#modes'), MODES, i => MODES[i].id === L.mode, i => { L.mode = MODES[i].id; if (ctx) choke(L, ctx.currentTime); drawPanel(); });
-  $('#singopts').hidden = L.mode !== 'sing'; $('#loopopts').hidden = L.mode !== 'loop';
+  const modes = L.kind === 'music' ? MODES_MUSIC : MODES;
+  chipRow($('#modes'), modes, i => modes[i].id === L.mode, i => { L.mode = modes[i].id; if (ctx) choke(L, ctx.currentTime); drawPanel(); });
+  $('#singopts').hidden = L.mode !== 'sing' && L.mode !== 'chop'; $('#loopopts').hidden = L.mode !== 'loop';
+  $('#newtune').textContent = L.mode === 'chop' ? '🎲 New chop' : '🎲 New tune';
+  $('#harmony').hidden = L.mode !== 'sing';
+  $('#voiceopts').hidden = L.mode === 'fit' || L.mode === 'chop' || L.mode === 'inst';
+  $('#instopts').hidden = L.mode !== 'inst';
+  chipRow($('#insts'), INSTS, i => i === (L.inst || 0), i => { L.inst = i; drawPanel(); });
   chipRow($('#rhythms'), RHYTHMS, i => i === L.rhythm, i => { L.rhythm = i; drawPanel(); });
   chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; drawPanel(); });
   [['#harmony', L.harmony], ['#echo', L.echo]].forEach(([id, v]) => { $(id).classList.toggle('on', v); $(id).setAttribute('aria-pressed', v); });
@@ -773,14 +892,15 @@ function sing(id){
 function frame(){
   if (ctx && playing){
     const now = ctx.currentTime;
-    while (vis.length && vis[0].t <= now){
-      const v = vis.shift();
+    vis = vis.filter(v => {
+      if (v.t > now) return true;
       if (v.id != null) sing(v.id);
       else if (v.step % 4 === 0){
         const k = (v.step % 16) / 4;
         document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('lit', i === k));
       }
-    }
+      return false;
+    });
   }
   requestAnimationFrame(frame);
 }
@@ -796,7 +916,7 @@ recBtn.addEventListener('blur', endRec);
 $('#vol').oninput = e => { if (beatBus) beatBus.gain.value = e.target.value / 100; };
 $('#tempo').oninput = e => setTempo(e.target.value);
 document.querySelectorAll('[data-silly]').forEach(b => b.onclick = async () => { await wake(); addLayer(sillyBuf(b.dataset.silly), 'loop'); });
-$('#newtune').onclick = () => { const L = sel(); if (!L) return; L.seed = Math.random() * 1e9 | 0; arrange(L); say('New tune!'); if (!playing) start(); };
+$('#newtune').onclick = () => { const L = sel(); if (!L) return; L.seed = Math.random() * 1e9 | 0; arrange(L); say(L.mode === 'chop' ? 'New chop!' : 'New tune!'); if (!playing) start(); };
 $('#harmony').onclick = () => { const L = sel(); if (!L) return; L.harmony = !L.harmony; drawPanel(); };
 $('#echo').onclick = () => { const L = sel(); if (!L) return; L.echo = !L.echo; drawPanel(); };
 $('#mute').onclick = () => {
@@ -877,7 +997,7 @@ async function writeSong(asNew){
     entry.name = name; entry.style = style.name; entry.at = new Date().toISOString();
     await dbSet('song:' + entry.id, {v:1, style:style.name, tempo, parts:Object.assign({}, parts), keySound,
       layers: layers.map(L => ({sr:L.buf.sampleRate, data:L.buf.getChannelData(0).slice(), mode:L.mode, rhythm:L.rhythm,
-        voice:L.voice, harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look}))});
+        voice:L.voice, harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0}))});
     await dbSet('index', ix);
     curId = entry.id; curName = name;
     say('Saved "' + name + '" on this device.');
@@ -891,8 +1011,9 @@ async function loadSong(id){
     layers.forEach(L => choke(L, ctx.currentTime));
     layers = s.layers.map(o => {
       const buf = ctx.createBuffer(1, o.data.length, o.sr); buf.getChannelData(0).set(o.data);
-      const L = {id: uid++, buf, take: analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice,
-        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, cur:[]};
+      const kind = o.kind || 'voice';
+      const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice,
+        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, inst:o.inst || 0, cur:[]};
       arrange(L); return L;
     });
     colorIx = layers.reduce((m, L) => Math.max(m, L.look + 1), 0); selId = null;
@@ -953,7 +1074,7 @@ twoTap($('#forget'), 'Delete all', 'Tap again to delete all', async () => {
 });
 
 $('#ver').textContent = 'Version ' + VERSION;
-setTempo(style.bpm); drawBeats(); drawBand(); drawLayers(); drawRec(); frame();
+setTempo(style.bpm); drawBeats(); drawKinds(); drawBand(); drawLayers(); drawRec(); frame();
 })();
 </script>
 </body>
