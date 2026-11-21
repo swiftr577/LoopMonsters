@@ -143,7 +143,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       <div class="chips" id="rhythms"></div>
     </div>
     <div id="instopts">
-      <p>Instrument</p>
+      <p>Tune instrument</p>
       <div class="chips" id="insts"></div>
     </div>
     <div id="voiceopts">
@@ -242,7 +242,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.7.0';   // bump this with each release
+const VERSION = '1.9.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -306,7 +306,7 @@ const VOICES = [
   {name:'Monster',icon:'👹',rate:.62,shift:-12},
   {name:'Robot',icon:'🤖',rate:1,shift:0,robot:true}
 ];
-const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
+const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'Band',icon:'🎺',id:'band'},{name:'Beat',icon:'🥁',id:'beat'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const MODES_MUSIC = [{name:'Fit to beat',icon:'🎯',id:'fit'},{name:'Chop up',icon:'✂️',id:'chop'},{name:'As recorded',icon:'📼',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const KINDS = [{name:'Voice',icon:'🗣️',id:'voice',secs:10},{name:'Music',icon:'🎸',id:'music',secs:16}];
 const INSTS = [
@@ -438,15 +438,32 @@ function transcribe(T, pcs){
   });
   return notes.map(o => {
     if (o.m >= 0) return {at: o.j * fs, dur: o.n * fs, midi: o.m};
-    const a = Math.floor(o.j * T.hopS), b = Math.min(T.data.length, a + Math.floor(o.n * T.hopS));
-    const share = w => {                                    // how much of the sound's energy sits below roughly sr / w hertz
-      let run = 0, lo = 0, all = 0;
-      for (let i = a; i < b; i++){ run += T.data[i]; if (i - w >= a) run -= T.data[i - w]; const v = run / w; lo += v * v; all += T.data[i] * T.data[i]; }
-      return all ? lo / all : 0;
-    };
-    // mostly deep rumble = kick, mostly hiss = hi-hat, in between = snare
-    return {at: o.j * fs, drum: share(Math.round(T.sr / 400)) > .2 ? 'k' : share(Math.round(T.sr / 2000)) < .35 ? 'h' : 's'};
+    const a = Math.floor(o.j * T.hopS);
+    return {at: o.j * fs, drum: drumKind(T, a, Math.min(T.data.length, a + Math.floor(o.n * T.hopS)))};
   });
+}
+/* Which drum does a noise sound like? Mostly deep rumble = kick, mostly hiss = hi-hat, in between = snare. */
+function drumKind(T, a, b){
+  const share = w => {                                      // how much of the sound's energy sits below roughly sr / w hertz
+    let run = 0, lo = 0, all = 0;
+    for (let i = a; i < b; i++){ run += T.data[i]; if (i - w >= a) run -= T.data[i - w]; const v = run / w; lo += v * v; all += T.data[i] * T.data[i]; }
+    return all ? lo / all : 0;
+  };
+  return share(Math.round(T.sr / 400)) > .2 ? 'k' : share(Math.round(T.sr / 2000)) < .35 ? 'h' : 's';
+}
+/* Beat: every syllable or beatbox noise becomes one drum hit on the nearest step of the grid. Noises are sorted by how
+   they sound; spoken or sung syllables become a hi-hat if they start with a hiss, otherwise a snare when the voice
+   goes up and a kick when it stays low. */
+function buildBeat(L, sd){
+  const T = L.take, need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8) * 16;
+  const ev = Array.from({length:period}, () => null), mid = 440 * Math.pow(2, (T.center - 69) / 12);
+  T.segs.forEach(g => {
+    const q = Math.round(g.a / T.sr / sd) % period, end = Math.min(g.b, g.a + Math.floor(T.sr * .07));
+    let d = drumKind(T, g.a, end);
+    if (g.med && d !== 'h') d = g.med > mid * 1.06 ? 's' : 'k';
+    if (!ev[q]) ev[q] = d;
+  });
+  return {period, ev};
 }
 /*ENDDSP*/
 function tuned(T, si, midi){
@@ -479,10 +496,50 @@ function arrange(L){
   for (let rep = 0; rep < 2; rep++) mel.forEach(m => { L.ev[rep * 64 + m.st] = {len:m.len, off:m.off, si: si++ % L.take.segs.length}; });
 }
 /* Auto-tune: the notes of the beat's key that always sound good (a five-note scale), and the nearest one to a pitch. */
-function keyScale(S){
-  const tonic = S.prog.find(p => p[0] === 0), minor = !tonic || tonic[1][0] === 'm' || tonic[1] === '5';
-  return (minor ? [0,3,5,7,10] : [0,2,4,7,9]).map(x => (S.key + x) % 12);
+function isMinor(S){ const tonic = S.prog.find(p => p[0] === 0); return !tonic || tonic[1][0] === 'm' || tonic[1] === '5'; }
+function keyScale(S){ return (isMinor(S) ? [0,3,5,7,10] : [0,2,4,7,9]).map(x => (S.key + x) % 12); }
+/*BAND*/
+/* Band: work out a whole arrangement from one hummed tune. The tune is the lead. For each bar, pick the chord from the
+   key that best matches the notes hummed in it; the bass and keyboard follow that chord. The drum beat follows the
+   tune's rhythm: kick on bar starts and where off-beat notes land, snare on beats 2 and 4, hi-hats in between.
+   If the take has plenty of beatboxing, those hits are the drum track instead. */
+function buildBand(L, S, sd){
+  const pcs = keyScale(S), notes = transcribe(L.take, pcs);
+  const need = L.buf.duration / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8, period = bars * 16;
+  const ev = Array.from({length:period}, () => []), w = Array.from({length:bars}, () => new Float32Array(12)), ons = new Set();
+  let drums = 0;
+  notes.forEach(o => {
+    const q = Math.round(o.at / sd) % period;
+    if (o.drum){ ev[q].push({d:o.drum}); drums++; return; }
+    const len = clamp(Math.round(o.dur / sd), 1, 16);
+    ev[q].push({m:o.midi, len}); ons.add(q);
+    for (let k = 0; k < len; k++) w[((q + k) % period) >> 4][o.midi % 12] += 1;
+  });
+  const cand = isMinor(S) ? [[0,'m'],[8,'M'],[10,'M'],[5,'m'],[3,'M'],[7,'m']] : [[0,'M'],[5,'M'],[7,'M'],[9,'m'],[2,'m'],[4,'m']];
+  const busy = ons.size / bars >= 6, chords = [];
+  let prev = cand[0];
+  for (let b = 0; b < bars; b++){
+    let best = prev, bs = 0;
+    cand.forEach((c, ci) => {
+      const root = (S.key + c[0]) % 12; let sc = 0;
+      CHORDS[c[1]].forEach((iv, k) => sc += w[b][(root + iv) % 12] * (k ? 1 : 1.2));
+      if (ci === 0) sc *= 1.05;
+      if (sc > bs){ bs = sc; best = c; }
+    });
+    prev = best; chords.push(best);
+    const root = (S.key + best[0]) % 12, o = b * 16, br = 36 + root;
+    ev[o].push({ch: CHORDS[best[1]].map(iv => { let m = root + iv + 48; while (m < 55) m += 12; while (m >= 67) m -= 12; return m; })});
+    ev[o].push({b:br, len:6}); ev[o + 8].push({b:br + 7, len:3}); ev[o + 12].push({b:br, len:3});
+    if (drums < 4) for (let s = 0; s < 16; s++){
+      const q = o + s;
+      if (s === 0 || (ons.has(q) && (s === 6 || s === 8 || s === 10 || s === 14))) ev[q].push({d:'k'});
+      if (s === 4 || s === 12) ev[q].push({d:'s'});
+      if (s % 2 === 0 || busy) ev[q].push({d:'h'});
+    }
+  }
+  return {period, ev, chords};
 }
+/*ENDBAND*/
 function snap(midi, pcs){
   let best = Math.round(midi), d = 99;
   for (let m = Math.floor(midi) - 6; m <= midi + 6; m++) if (pcs.includes(m % 12) && Math.abs(m - midi) < d){ d = Math.abs(m - midi); best = m; }
@@ -554,7 +611,9 @@ function tone(t, midi, dur, wave, peak, cutoff, attack, out){
 function scheduleStep(n, t){
   const S = style, s = n % 16, bar8 = n >> 4, bar = bar8 % 4, sd = stepDur();
   const on = p => p && p[s] !== '.';
-  if (parts.drums){
+  const own = layers.some(L => L.mode === 'band' && !L.muted && L.take);   // a Band monster brings its own band
+  const ownBeat = layers.some(L => L.mode === 'beat' && !L.muted && L.take);   // a Beat monster is the drummer
+  if (parts.drums && !own && !ownBeat){
     if (on(S.k)) kick(t);
     if (on(S.s)) snare(t);
     if (on(S.h)) hat(t, s % 4 === 0 ? 1 : .65);
@@ -567,12 +626,12 @@ function scheduleStep(n, t){
 
   const root = S.key + S.prog[bar][0], type = S.prog[bar][1];
   const notes = CHORDS[type].map(iv => { let m = root + iv; while (m < 55) m += 12; while (m >= 67) m -= 12; return m; });
-  if (parts.bass && on(S.bass)){
+  if (parts.bass && !own && on(S.bass)){
     let br = root; while (br > 47) br -= 12;
     let len = 1; while (len < 8 && s + len < 16 && S.bass[s + len] === '.') len++;
     tone(t, br + parseInt(S.bass[s], 36), sd * len * .92, S.bw || 'triangle', S.bv || .5, S.bc || 700);
   }
-  if (parts.chords){
+  if (parts.chords && !own){
     if (on(S.ch)){
       const k = KEYS[keySound].id, wave = k === 'auto' ? S.cw || 'triangle' : k;
       const vol = k === 'auto' ? S.cv || .13 : k === 'triangle' ? .13 : .07;
@@ -584,7 +643,7 @@ function scheduleStep(n, t){
       tone(t, m + 12, sd * 1.4, S.aw || 'square', S.av || .06, 3000);
     }
   }
-  if (parts.twinkle && s % 2 === 0) tone(t, notes[[0,2,1,2,0,1,2,1][s >> 1] % notes.length] + 24, sd * 1.8, 'sine', .07, 6000);
+  if (parts.twinkle && !own && s % 2 === 0) tone(t, notes[[0,2,1,2,0,1,2,1][s >> 1] % notes.length] + 24, sd * 1.8, 'sine', .07, 6000);
 
   /* singers take turns, one bar each */
   const singers = layers.filter(L => L.mode === 'sing' && !L.muted);
@@ -635,6 +694,31 @@ function scheduleStep(n, t){
       }
       vis.push({t, id:L.id});
     });
+  });
+  layers.forEach(L => {
+    if (L.muted || L.mode !== 'band' || !L.take) return;
+    const key = S.name + '|' + tempo;
+    if (L.bkey !== key){ L.bkey = key; L.band = buildBand(L, S, sd); }
+    const I = INSTS[L.inst || 0]; let lead = false;
+    L.band.ev[n % L.band.period].forEach(e => {
+      if (e.d){ if (parts.drums){ if (e.d === 'k') kick(t); else if (e.d === 's') snare(t); else hat(t, .7); } }
+      else if (e.ch){ if (parts.chords) e.ch.forEach(m => tone(t, m, sd * 15.5, 'triangle', .09, 1800, .03)); }
+      else if (e.b){ if (parts.bass) tone(t, e.b, sd * e.len * .92, S.bw || 'triangle', S.bv || .5, S.bc || 700); }
+      else {
+        let m = e.m; while (m < 60) m += 12; while (m > 84) m -= 12;
+        const g = tone(t, m, clamp(e.len, 1.5, 16) * sd, I.wave, I.vol, I.cut, I.att, sampleBus);
+        if (L.echo) g.connect(echoIn); lead = true;
+      }
+    });
+    if (lead) vis.push({t, id:L.id});
+  });
+  layers.forEach(L => {
+    if (L.muted || L.mode !== 'beat' || !L.take) return;
+    if (L.tkey !== tempo){ L.tkey = tempo; L.beat = buildBeat(L, sd); }
+    const d = L.beat.ev[n % L.beat.period];
+    if (!d) return;
+    if (d === 'k') kick(t); else if (d === 's') snare(t); else hat(t, 1);
+    vis.push({t, id:L.id});
   });
   /* recorded music, resampled: played faster or slower so it lasts a whole number of bars (or beats) and loops in time.
      Chop up plays it as half-beat slices, following the monster's chop pattern. */
@@ -795,7 +879,7 @@ function addLayer(buf, mode, kind){
   drawLayers();
   const singers = layers.filter(l => l.mode === 'sing').length;
   if (kind === 'music') say('Your music is looping in time with the beat! Tap the monster to chop it up.');
-  else say(mode === 'sing' ? (singers > 1 ? 'Now your monsters take turns singing!' : "That's your song! Tap the monster to change it, or try Auto-tune or Instrument.")
+  else say(mode === 'sing' ? (singers > 1 ? 'Now your monsters take turns singing!' : "That's your song! Tap the monster to change it, or try the other choices.")
                       : 'Added! Tap the monster to change it.');
   if (!playing) start();
 }
@@ -872,12 +956,16 @@ function drawPanel(){
   const L = sel(), p = $('#panel');
   p.hidden = !L; if (!L) return;
   const modes = L.kind === 'music' ? MODES_MUSIC : MODES;
-  chipRow($('#modes'), modes, i => modes[i].id === L.mode, i => { L.mode = modes[i].id; if (ctx) choke(L, ctx.currentTime); drawPanel(); });
+  chipRow($('#modes'), modes, i => modes[i].id === L.mode, i => {
+    L.mode = modes[i].id; if (ctx) choke(L, ctx.currentTime); drawPanel();
+    if (L.mode === 'band') say('This monster plays your tune with its own band, so the usual band takes a rest.');
+    if (L.mode === 'beat') say('This monster is the drummer now, so the usual drums take a rest.');
+  });
   $('#singopts').hidden = L.mode !== 'sing' && L.mode !== 'chop'; $('#loopopts').hidden = L.mode !== 'loop';
   $('#newtune').textContent = L.mode === 'chop' ? '🎲 New chop' : '🎲 New tune';
   $('#harmony').hidden = L.mode !== 'sing';
-  $('#voiceopts').hidden = L.mode === 'fit' || L.mode === 'chop' || L.mode === 'inst';
-  $('#instopts').hidden = L.mode !== 'inst';
+  $('#voiceopts').hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);
+  $('#instopts').hidden = L.mode !== 'inst' && L.mode !== 'band';
   chipRow($('#insts'), INSTS, i => i === (L.inst || 0), i => { L.inst = i; drawPanel(); });
   chipRow($('#rhythms'), RHYTHMS, i => i === L.rhythm, i => { L.rhythm = i; drawPanel(); });
   chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; drawPanel(); });
