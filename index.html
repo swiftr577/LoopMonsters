@@ -67,15 +67,41 @@ h2{font-size:18px;font-weight:800;margin:0}
 .mouth.fang::before{left:3px} .mouth.fang::after{right:3px}
 .blob.cheeks::before,.blob.cheeks::after{content:"";position:absolute;bottom:14px;width:9px;height:6px;border-radius:50%;background:rgba(255,70,120,.5)}
 .blob.cheeks::before{left:4px} .blob.cheeks::after{right:4px}
-.top{position:absolute;left:0;right:0;top:-14px;height:14px;display:flex;justify-content:space-between;align-items:flex-end;padding:0 9px;pointer-events:none}
-.top i{display:block}
-.top.horns i{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:13px solid var(--line)}
-.top.ears i{width:15px;height:15px;border-radius:50%;background:var(--c);border:3px solid var(--line);margin-bottom:-6px}
-.top.antenna,.top.tuft{justify-content:center;gap:2px}
-.top.antenna i{width:3px;height:12px;background:var(--line);position:relative}
-.top.antenna i::before{content:"";position:absolute;left:-5px;top:-9px;width:9px;height:9px;border-radius:50%;background:var(--c);border:2px solid var(--line)}
-.top.tuft i{width:4px;height:12px;background:var(--line);border-radius:3px;transform-origin:bottom}
-.top.tuft i:first-child{transform:rotate(-28deg)} .top.tuft i:last-child{transform:rotate(28deg)}
+#blobs{display:flex;flex-wrap:wrap;gap:24px 12px;justify-content:center;padding-top:12px}
+#hint{margin:0;text-align:center;font-weight:700;max-width:26ch}
+
+.blob{width:64px;height:64px;border:3px solid var(--line);padding:0;position:relative;
+  box-shadow:0 4px 0 var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px}
+.blob.sel{outline:4px solid var(--ink);outline-offset:3px}
+.blob.muted{opacity:.5}
+.eyes{display:flex;gap:5px}
+.eye{width:15px;height:15px;border-radius:50%;background:#fff;border:2px solid var(--face);position:relative}
+.eye::after{content:"";position:absolute;width:6px;height:6px;border-radius:50%;background:var(--face);left:3px;top:4px}
+.blob.muted .eye{height:4px;background:var(--face);border-radius:2px}
+.blob.muted .eye::after{display:none}
+.eye.big{width:20px;height:20px} .eye.big::after{width:8px;height:8px;left:4px;top:5px}
+.eye.small{width:11px;height:11px} .eye.small::after{width:5px;height:5px;left:1px;top:2px}
+.gl .eye::after{transform:translateX(-2px)} .gr .eye::after{transform:translateX(2px)}
+.mouth{width:20px;height:6px;background:var(--face);border-radius:0 0 12px 12px;position:relative;transform-origin:top}
+.mouth.o{width:12px;height:12px;border-radius:50%}
+.mouth.teeth{width:24px;height:10px;border-radius:3px;border:2px solid var(--face);background:repeating-linear-gradient(90deg,#fff 0 5px,var(--face) 5px 6px)}
+.mouth.tongue{width:22px;height:10px;overflow:hidden}
+.mouth.tongue::after{content:"";position:absolute;left:6px;bottom:-3px;width:10px;height:8px;border-radius:50%;background:#FF6B81}
+.mouth.flat{width:18px;height:3px;border-radius:2px}
+.mouth.fang{width:22px;height:7px}
+.mouth.fang::before,.mouth.fang::after{content:"";position:absolute;top:0;border-left:3px solid transparent;border-right:3px solid transparent;border-top:6px solid #fff}
+.mouth.fang::before{left:3px} .mouth.fang::after{right:3px}
+.blob.cheeks::before,.blob.cheeks::after{content:"";position:absolute;bottom:14px;width:9px;height:6px;border-radius:50%;background:rgba(255,70,120,.5)}
+.blob.cheeks::before{left:4px} .blob.cheeks::after{right:4px}
+.hat{position:absolute;left:0;right:0;top:-14px;height:14px;display:flex;justify-content:space-between;align-items:flex-end;padding:0 9px;pointer-events:none}
+.hat i{display:block}
+.hat.horns i{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:13px solid var(--line)}
+.hat.ears i{width:15px;height:15px;border-radius:50%;background:var(--c);border:3px solid var(--line);margin-bottom:-6px}
+.hat.antenna,.hat.tuft{justify-content:center;gap:2px}
+.hat.antenna i{width:3px;height:12px;background:var(--line);position:relative}
+.hat.antenna i::before{content:"";position:absolute;left:-5px;top:-9px;width:9px;height:9px;border-radius:50%;background:var(--c);border:2px solid var(--line)}
+.hat.tuft i{width:4px;height:12px;background:var(--line);border-radius:3px;transform-origin:bottom}
+.hat.tuft i:first-child{transform:rotate(-28deg)} .hat.tuft i:last-child{transform:rotate(28deg)}
 
 .panel{background:var(--card);border:3px solid var(--line);border-radius:20px;box-shadow:0 4px 0 var(--line);
   padding:12px;margin-top:14px}
@@ -302,7 +328,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.23.0';   // bump this with each release
+const VERSION = '1.23.1';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -1503,7 +1529,7 @@ function drawLayers(){
     b.style.borderRadius = K.shape;
     b.setAttribute('aria-label', 'Monster ' + (i + 1) + (L.muted ? ', asleep' : ''));
     b.setAttribute('aria-pressed', L.id === selId);
-    b.innerHTML = (K.top ? '<span class="top ' + K.top + '">' + '<i></i>'.repeat(K.top === 'antenna' ? 1 : K.top === 'tuft' ? 3 : 2) + '</span>' : '') +
+    b.innerHTML = (K.top ? '<span class="hat ' + K.top + '">' + '<i></i>'.repeat(K.top === 'antenna' ? 1 : K.top === 'tuft' ? 3 : 2) + '</span>' : '') +
       '<span class="eyes ' + K.gaze + '">' + ('<i class="eye ' + K.size + '"></i>').repeat(K.eyes) + '</span><i class="mouth ' + K.mouth + '"></i>';
     b.onclick = () => { selId = selId === L.id ? null : L.id; drawLayers(); };
     wrap.appendChild(b);
