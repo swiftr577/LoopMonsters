@@ -267,7 +267,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.17.0';   // bump this with each release
+const VERSION = '1.19.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -314,7 +314,28 @@ const STYLES = [
   bass:'0.0.7.7.c.c.7.7.',ch:'..x...x...x...x.',cw:'sawtooth',cv:.09,prog:[[0,'M'],[5,'M'],[7,'M'],[5,'M']]},
  {name:'Spooky',icon:'👻',bpm:92,key:38,k:'x.....x...x.....',s:'....x.......x...',h:'x..xx..xx..xx..x',
   bass:'0.....1...0.....',ch:'X...............',cw:'square',cv:.05,arp:'0...2...1...3...',aw:'sine',av:.12,
-  prog:[[0,'m'],[0,'m'],[1,'M'],[0,'m']]}
+  prog:[[0,'m'],[0,'m'],[1,'M'],[0,'m']]},
+ /* Original beats in the genres Songify shipped with (Club, Rap; it also had Pop), plus R&B and Ballad in the same spirit. */
+ {name:'Club',icon:'💃',bpm:128,key:45,k:'x...x...x...x...',c:'....x.......x...',o:'..x...x...x...x.',
+  bass:'..0...0...0...0.',bw:'sawtooth',ch:'x..x..x.x..x..x.',cw:'sawtooth',cv:.07,arp:'0.2.1.2.3.2.1.2.',av:.04,
+  prog:[[0,'m'],[8,'M'],[3,'M'],[10,'M']]},
+ {name:'Rap',icon:'🎙️',bpm:94,key:38,k:'x.....x...x..x..',s:'....x.......x...',h:'x.x.x.x.x.x.x.x.',
+  bass:'0.....0...0..7..',bv:.6,ch:'x.....x.........',arp:'....2.......3...',aw:'sine',av:.1,prog:[[0,'m'],[0,'m'],[10,'M'],[8,'M']]},
+ {name:'R&B',icon:'💜',bpm:72,sw:.12,key:41,k:'x......x..x.....',s:'....x.......x...',h:'x.x.x.x.x.x.x.xx',
+  bass:'0......0..0...7.',ch:'X.......x.......',cc:1600,arp:'......2.......3.',aw:'sine',av:.1,prog:[[0,'M7'],[9,'m7'],[2,'m7'],[7,'7']]},
+ {name:'Ballad',icon:'🎻',bpm:66,key:36,k:'x.........x.....',s:'........x.......',h:'x...x...x...x...',
+  bass:'0.......0.......',ch:'x...x...x...x...',arp:'..1...2...1...2.',aw:'triangle',av:.07,prog:[[0,'M'],[7,'M'],[9,'m'],[5,'M']]},
+ /* Original beats in the feel of viral "songified" videos: pounding piano, hand claps, soul chords, shuffle and synth pop.
+    Written from scratch on everyday chord progressions; no melody, lyric or recording from any existing song is used. */
+ {name:'Anthem',icon:'🙌',bpm:118,key:36,k:'x.....x.x.....x.',s:'....x.......x...',c:'....x.......x...',h:'x.x.x.x.x.x.x.x.',
+  bass:'0.....0.0.....7.',ch:'x.x.x.x.x.x.x.x.',cv:.1,prog:[[0,'M'],[7,'M'],[9,'m'],[5,'M']]},
+ {name:'Soul Pop',icon:'🕶️',bpm:100,sw:.1,key:43,k:'x..x......x.....',s:'....x.......x...',c:'....x.......x...',h:'x.x.x.x.x.x.x.x.',
+  bass:'0..0..c...0.7...',bw:'sawtooth',ch:'..x..x....x..x..',prog:[[0,'M7'],[4,'m7'],[9,'m7'],[5,'M7']]},
+ {name:'Gospel',icon:'🎶',bpm:104,sw:.2,sw8:true,key:41,k:'x.....x.x.....x.',c:'....x.......x...',h:'..x...x...x...x.',
+  bass:'0.....7.c.....7.',ch:'X...............',cw:'square',cv:.05,prog:[[0,'M'],[5,'M'],[0,'M'],[7,'M']]},
+ {name:'Electro Pop',icon:'🌈',bpm:124,key:45,k:'x...x...x...x...',c:'....x.......x...',h:'..x...x...x...x.',
+  bass:'0.0c0.0c0.0c0.0c',bw:'sawtooth',bc:1200,ch:'X...............',cw:'sawtooth',cv:.05,arp:'0.2.3.2.1.2.3.2.',av:.05,
+  prog:[[0,'m'],[10,'M'],[8,'M'],[10,'M']]}
 ];
 /* Versions 2 and 3 of each beat: only the parts that differ from version 1. */
 const VARS = {
@@ -377,7 +398,31 @@ const VARS = {
   {k:'x...x...x...x...',h:'..x...x...x...x.',bass:'0.0.7.7.0.0.7.7.',arp:'....2.......3...',aw:'square',prog:[[0,'M'],[0,'M'],[5,'M'],[7,'M']]}],
  'Spooky':[
   {k:'x.......x.x.....',h:'x..x..x..x..x.x.',bass:'0..0..1.0..0..7.',arp:'0.2.1.2.0.2.1.3.',prog:[[0,'m'],[8,'M'],[0,'m'],[7,'M']]},
-  {k:'x.....x.....x...',s:'',p:'...x.....x.....x',h:'',bass:'0.....7.....c...',ch:'x.....x.....x...',arp:'..2.1...2.1...2.',prog:[[0,'m'],[3,'M'],[8,'M'],[1,'M']]}]
+  {k:'x.....x.....x...',s:'',p:'...x.....x.....x',h:'',bass:'0.....7.....c...',ch:'x.....x.....x...',arp:'..2.1...2.1...2.',prog:[[0,'m'],[3,'M'],[8,'M'],[1,'M']]}],
+ 'Club':[
+  {h:'xxxxxxxxxxxxxxxx',bass:'0.0.0.0.0.0.0.0.',ch:'X...............',arp:'',prog:[[0,'m'],[0,'m'],[8,'M'],[10,'M']]},
+  {k:'x...x...x...x.x.',bass:'0..0..0.0..0..7.',ch:'..x...x...x...x.',arp:'0..2..1.3..2..1.',prog:[[0,'m'],[3,'M'],[10,'M'],[5,'m']]}],
+ 'Rap':[
+  {k:'x..x..x...x.....',c:'....x.......x...',o:'......x.......x.',bass:'0..0..0...0.....',ch:'..x.......x.....',cw:'sawtooth',cv:.07,arp:'',prog:[[0,'m7'],[0,'m7'],[5,'m7'],[0,'m7']]},
+  {k:'x.x...x..x..x...',h:'xxx.xxx.xxx.xxx.',bass:'0.0...0..0..7...',ch:'X...............',arp:'0...2...3...2...',aw:'square',av:.05,prog:[[0,'m'],[8,'M'],[5,'m'],[7,'m']]}],
+ 'R&B':[
+  {k:'x.....x...x.....',s:'',c:'....x.......x...',h:'x.xxx.x.x.xxx.x.',bass:'0.....0...c.....',ch:'x.....x...x.....',prog:[[0,'M7'],[5,'M7'],[2,'m7'],[7,'7']]},
+  {k:'x..x......x.....',h:'x.x.x.x.x.x.x.x.',o:'..............x.',bass:'0..0......0.7...',ch:'X...............',arp:'0.1.2.3.2.1.2.1.',aw:'triangle',av:.07,prog:[[0,'M7'],[4,'m7'],[9,'m7'],[5,'M7']]}],
+ 'Ballad':[
+  {k:'x.....x.x.......',s:'....x.......x...',h:'x.x.x.x.x.x.x.x.',bass:'0.0.0.0.0.0.0.0.',bw:'sawtooth',ch:'X...............',cw:'sawtooth',cv:.06,arp:'',prog:[[9,'m'],[5,'M'],[0,'M'],[7,'M']]},
+  {k:'x.......x.......',s:'',p:'....x.......x...',h:'',bass:'0.......7.......',ch:'',arp:'0.1.2.3.2.1.0.1.',aw:'triangle',av:.1,prog:[[0,'M'],[9,'m'],[5,'M'],[7,'M']]}],
+ 'Anthem':[
+  {k:'x...x...x...x...',s:'',h:'',o:'..x...x...x...x.',bass:'0.0.0.0.0.0.0.0.',bw:'sawtooth',ch:'X.......x.x.....',arp:'0.1.2.1.3.1.2.1.',aw:'triangle',av:.07,prog:[[9,'m'],[5,'M'],[0,'M'],[7,'M']]},
+  {k:'x.......x.x.....',c:'',bass:'0.......0.7.....',ch:'x..x..x.x..x..x.',prog:[[0,'M'],[9,'m'],[5,'M'],[7,'M']]}],
+ 'Soul Pop':[
+  {k:'x.....x...x.x...',c:'',h:'x.xxx.x.x.xxx.x.',bass:'0.....0...c.7...',ch:'X.....x.........',arp:'......2.......3.',aw:'sine',av:.1,prog:[[0,'M7'],[9,'m7'],[2,'m7'],[7,'7']]},
+  {k:'x..x..x...x..x..',s:'',o:'......x.......x.',bass:'0..0..0...7..c..',ch:'x..x...x..x.x...',prog:[[0,'M7'],[5,'M7'],[7,'7'],[9,'m7']]}],
+ 'Gospel':[
+  {k:'x...x...x...x...',h:'x.x.x.x.x.x.x.x.',bass:'0...7...0...7...',ch:'x.....x.x.....x.',cw:'triangle',cv:.12,prog:[[0,'M'],[9,'m'],[5,'M'],[7,'M']]},
+  {k:'x.....x...x.....',c:'....x..x....x...',h:'x.x.x.x.x.x.x.x.',bass:'0.....a...c.....',ch:'..x...x...x...x.',prog:[[0,'7'],[5,'7'],[0,'7'],[7,'7']]}],
+ 'Electro Pop':[
+  {k:'x.....x.x.....x.',h:'xxxxxxxxxxxxxxxx',bass:'0..0..0.0..0..7.',ch:'x..x..x..x..x.x.',cv:.06,arp:'',prog:[[0,'m'],[3,'M'],[8,'M'],[10,'M']]},
+  {h:'',o:'..x...x...x...x.',bass:'..0...0...0..0.0',ch:'',arp:'0123012332103210',prog:[[0,'m'],[5,'m'],[8,'M'],[7,'m']]}]
 };
 /*END*/
 const CHORDS = {M:[0,4,7], m:[0,3,7], '7':[0,4,7,10], m7:[0,3,7,10], M7:[0,4,7,11], '5':[0,7,12]};
