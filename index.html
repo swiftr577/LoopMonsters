@@ -176,7 +176,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
   <section class="beats">
     <div class="beathead">
       <h2>Pick a beat</h2>
-      <div class="dots" aria-hidden="true"><i class="dot"></i><i class="dot"></i><i class="dot"></i><i class="dot"></i></div>
+      <div class="dots" id="dots" aria-hidden="true"></div>
     </div>
     <div id="beatgrid"></div>
     <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
@@ -189,10 +189,16 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
     <summary>Band settings</summary>
     <p>Speed: <output id="bpm">90</output> beats a minute</p>
     <div class="slide"><span aria-hidden="true">🐢</span><input type="range" id="tempo" min="60" max="180" value="90" aria-label="Speed"><span aria-hidden="true">🐇</span></div>
+    <p>Beats in a bar</p>
+    <div class="chips" id="sigs"></div>
     <p>Who is in the band</p>
     <div class="chips" id="parts"></div>
     <p>Keyboard sound</p>
     <div class="chips" id="keys"></div>
+    <p>Band octave</p>
+    <div class="chips" id="octs"></div>
+    <p>Phaser (a swooshy sweep on the band)</p>
+    <div class="chips" id="phases"></div>
     <label class="slide" style="margin-bottom:0">Band volume <input type="range" id="vol" min="0" max="100" value="65"></label>
   </details>
 
@@ -246,7 +252,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.12.0';   // bump this with each release
+const VERSION = '1.13.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -409,7 +415,19 @@ let recKind = 0, takeKind = 'voice';
 let recState = 'idle', stream = null, rec = null, chunks = [], recTimer = null;
 
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
-const stepDur = () => 60 / tempo / 4;
+/* Time signatures. Every beat pattern is written as 16 steps (4/4); "map" says which of those steps each step of the bar
+   plays. 3/4 keeps beats 1, 2 and 4 (boom, chick, chick); 5/4 plays beat 4 twice; 6/8 drops the last step of every
+   beat, so each beat splits in three and the whole thing lilts. div = steps per beat. */
+const SIGS = [
+  {name:'4/4', div:4, map:[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]},
+  {name:'3/4 waltz', div:4, map:[0,1,2,3,4,5,6,7,12,13,14,15]},
+  {name:'5/4', div:4, map:[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,12,13,14,15]},
+  {name:'6/8 lilt', div:3, map:[0,1,2,4,5,6,8,9,10,12,13,14]}
+];
+const OCTS = [{name:'Low',v:-1},{name:'Normal',v:0},{name:'High',v:1}];
+const PHASES = [{name:'Off',wet:0,hz:.3},{name:'Gentle',wet:.7,hz:.25},{name:'Swirly',wet:1,hz:1.4}];
+let sigIx = 0, MAP = SIGS[0].map, BAR = 16, BEAT = 4, octIx = 1, phaseIx = 0, phaseWet, phaseLfo;
+const stepDur = () => 60 / tempo / BEAT;
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
 /*DSP*/
@@ -530,7 +548,7 @@ function drumKind(T, a, b){
    they sound; spoken or sung syllables become a hi-hat if they start with a hiss, otherwise a snare when the voice
    goes up and a kick when it stays low. */
 function buildBeat(L, sd){
-  const T = L.take, need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * 16;
+  const T = L.take, need = L.buf.duration / (sd * BAR), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * BAR;
   const ev = Array.from({length:period}, () => null), mid = 440 * Math.pow(2, (T.center - 69) / 12);
   T.segs.forEach(g => {
     const q = Math.round(g.a / T.sr / sd) % period, end = Math.min(g.b, g.a + Math.floor(T.sr * .07));
@@ -581,7 +599,7 @@ function keyScale(S){ return (isMinor(S) ? [0,3,5,7,10] : [0,2,4,7,9]).map(x => 
    If the take has plenty of beatboxing, those hits are the drum track instead. */
 function buildBand(L, S, sd){
   const pcs = keyScale(S), notes = transcribe(L.take, pcs);
-  const need = L.buf.duration / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16, period = bars * 16;
+  const need = L.buf.duration / (sd * BAR), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16, period = bars * BAR;
   const ev = Array.from({length:period}, () => []), w = Array.from({length:bars}, () => new Float32Array(12)), ons = new Set();
   let drums = 0;
   notes.forEach(o => {
@@ -589,7 +607,7 @@ function buildBand(L, S, sd){
     if (o.drum){ ev[q].push({d:o.drum}); drums++; return; }
     const len = clamp(Math.round(o.dur / sd), 1, 16);
     ev[q].push({m:o.midi, len}); ons.add(q);
-    for (let k = 0; k < len; k++) w[((q + k) % period) >> 4][o.midi % 12] += 1;
+    for (let k = 0; k < len; k++) w[Math.floor(((q + k) % period) / BAR)][o.midi % 12] += 1;
   });
   const cand = isMinor(S) ? [[0,'m'],[8,'M'],[10,'M'],[5,'m'],[3,'M'],[7,'m']] : [[0,'M'],[5,'M'],[7,'M'],[9,'m'],[2,'m'],[4,'m']];
   const busy = ons.size / bars >= 6, chords = [];
@@ -603,13 +621,14 @@ function buildBand(L, S, sd){
       if (sc > bs){ bs = sc; best = c; }
     });
     prev = best; chords.push(best);
-    const root = (S.key + best[0]) % 12, o = b * 16, br = 36 + root;
+    const root = (S.key + best[0]) % 12, o = b * BAR, br = 36 + root;
     ev[o].push({ch: CHORDS[best[1]].map(iv => { let m = root + iv + 48; while (m < 55) m += 12; while (m >= 67) m -= 12; return m; })});
-    ev[o].push({b:br, len:6}); ev[o + 8].push({b:br + 7, len:3}); ev[o + 12].push({b:br, len:3});
-    if (drums < 4) for (let s = 0; s < 16; s++){
-      const q = o + s;
-      if (s === 0 || (ons.has(q) && (s === 6 || s === 8 || s === 10 || s === 14))) ev[q].push({d:'k'});
-      if (s === 4 || s === 12) ev[q].push({d:'s'});
+    for (let s = 0; s < BAR; s++){
+      const q = o + s, ps = MAP[s];
+      if (s === 0) ev[q].push({b:br, len:6}); else if (ps === 8) ev[q].push({b:br + 7, len:3}); else if (ps === 12) ev[q].push({b:br, len:3});
+      if (drums >= 4) continue;
+      if (s === 0 || (ons.has(q) && (ps === 6 || ps === 8 || ps === 10 || ps === 14))) ev[q].push({d:'k'});
+      if (ps === 4 || ps === 12) ev[q].push({d:'s'});
       if (s % 2 === 0 || busy) ev[q].push({d:'h'});
     }
   }
@@ -636,6 +655,15 @@ function initAudio(){
   comp.threshold.value = -12; comp.ratio.value = 6; comp.connect(ctx.destination);
   duck = ctx.createGain(); duck.connect(comp);
   beatBus = ctx.createGain(); beatBus.gain.value = $('#vol').value / 100; beatBus.connect(duck);
+  phaseWet = ctx.createGain(); phaseWet.gain.value = PHASES[phaseIx].wet; phaseWet.connect(duck);   // phaser: a swept copy of the band mixed back in
+  phaseLfo = ctx.createOscillator(); phaseLfo.frequency.value = PHASES[phaseIx].hz;
+  const sweep = ctx.createGain(); sweep.gain.value = 700; phaseLfo.connect(sweep); phaseLfo.start();
+  let stage = beatBus;
+  for (let i = 0; i < 4; i++){
+    const ap = ctx.createBiquadFilter(); ap.type = 'allpass'; ap.frequency.value = 1000; ap.Q.value = .6;
+    sweep.connect(ap.frequency); stage.connect(ap); stage = ap;
+  }
+  stage.connect(phaseWet);
   sampleBus = ctx.createGain(); sampleBus.gain.value = 1.3; sampleBus.connect(duck);
   echoIn = ctx.createGain(); echoIn.gain.value = .5;
   echoDelay = ctx.createDelay(1); echoDelay.delayTime.value = stepDur() * 3;
@@ -678,6 +706,7 @@ function perc(t){
 }
 function tone(t, midi, dur, wave, peak, cutoff, attack, out){
   attack = attack || .005;
+  if (!out){ midi += OCTS[octIx].v * 12; if (midi < 33) midi += 12; }     // Band settings octave (kept high enough to hear)
   const o = ctx.createOscillator(); o.type = wave; o.frequency.value = mtof(midi);
   const f = ctx.createBiquadFilter(); f.type = 'lowpass';
   f.frequency.setValueAtTime(cutoff, t); f.frequency.exponentialRampToValueAtTime(Math.max(150, cutoff * .35), t + dur);
@@ -689,46 +718,46 @@ function tone(t, midi, dur, wave, peak, cutoff, attack, out){
 }
 
 function scheduleStep(n, t){
-  const S = style, s = n % 16, bar8 = n >> 4, bar = bar8 % 4, sd = stepDur();
-  const on = p => p && p[s] !== '.';
+  const S = style, s = n % BAR, ps = MAP[s], bar8 = Math.floor(n / BAR), bar = bar8 % 4, sd = stepDur();
+  const on = p => p && p[ps] !== '.';
   const own = layers.some(L => L.mode === 'band' && !L.muted && L.take);   // a Band monster brings its own band
   const ownBeat = layers.some(L => L.mode === 'beat' && !L.muted && L.take);   // a Beat monster is the drummer
   if (parts.drums && !own && !ownBeat){
     if (on(S.k)) kick(t);
     if (on(S.s)) snare(t);
-    if (on(S.h)) hat(t, s % 4 === 0 ? 1 : .65);
+    if (on(S.h)) hat(t, ps % 4 === 0 ? 1 : .65);
     if (on(S.o)) hat(t, 1, true);
     if (on(S.c)) clap(t);
     if (on(S.p)) perc(t);
   }
-  if (parts.clap && s % 8 === 4) clap(t);
+  if (parts.clap && ps % 8 === 4) clap(t);
   if (parts.shaker) noise(t, .03, 'highpass', 9000, s % 2 ? .07 : .13);
 
   const root = S.key + S.prog[bar][0], type = S.prog[bar][1];
   const notes = CHORDS[type].map(iv => { let m = root + iv; while (m < 55) m += 12; while (m >= 67) m -= 12; return m; });
   if (parts.bass && !own && on(S.bass)){
     let br = root; while (br > 47) br -= 12;
-    let len = 1; while (len < 8 && s + len < 16 && S.bass[s + len] === '.') len++;
-    tone(t, br + parseInt(S.bass[s], 36), sd * len * .92, S.bw || 'triangle', S.bv || .5, S.bc || 700);
+    let len = 1; while (len < 8 && s + len < BAR && S.bass[MAP[s + len]] === '.') len++;
+    tone(t, br + parseInt(S.bass[ps], 36), sd * len * .92, S.bw || 'triangle', S.bv || .5, S.bc || 700);
   }
   if (parts.chords && !own){
     if (on(S.ch)){
       const k = KEYS[keySound].id, wave = k === 'auto' ? S.cw || 'triangle' : k;
       const vol = k === 'auto' ? S.cv || .13 : k === 'triangle' ? .13 : .07;
-      const held = S.ch[s] === 'X', dur = held ? sd * (16 - s) * .98 : sd * 1.6;
+      const held = S.ch[ps] === 'X', dur = held ? sd * (BAR - s) * .98 : sd * 1.6;
       notes.forEach(m => tone(t, m, dur, wave, vol, S.cc || 2200, held ? .03 : .005));
     }
     if (on(S.arp)){
-      const i = +S.arp[s], m = i < notes.length ? notes[i] : notes[0] + 12;
+      const i = +S.arp[ps], m = i < notes.length ? notes[i] : notes[0] + 12;
       tone(t, m + 12, sd * 1.4, S.aw || 'square', S.av || .06, 3000);
     }
   }
-  if (parts.twinkle && !own && s % 2 === 0) tone(t, notes[[0,2,1,2,0,1,2,1][s >> 1] % notes.length] + 24, sd * 1.8, 'sine', .07, 6000);
+  if (parts.twinkle && !own && s % 2 === 0) tone(t, notes[[0,2,1,2,0,1,2,1][(s >> 1) % 8] % notes.length] + 24, sd * 1.8, 'sine', .07, 6000);
 
   /* singers take turns, one bar each */
   const singers = layers.filter(L => L.mode === 'sing' && !L.muted);
   const lead = singers.length ? singers[bar8 % singers.length] : null;
-  const e = lead && lead.ev[n % 64];
+  const e = lead && lead.ev[bar * 16 + ps];
   if (e){
     const si = lead.next++ % lead.take.segs.length;       // next syllable; wraps only after the last one
     const lad = ladder(root, type, lead.take.center), V = VOICES[lead.voice];
@@ -740,7 +769,7 @@ function scheduleStep(n, t){
     vis.push({t, id:lead.id});
   }
   layers.forEach(L => {
-    if (L.mode === 'loop' && !L.muted && RHYTHMS[L.rhythm].fn(s, bar)){
+    if (L.mode === 'loop' && !L.muted && RHYTHMS[L.rhythm].fn(ps, bar)){
       choke(L, t); playBuf(L, L.buf, t, VOICES[L.voice].rate, 1); vis.push({t, id:L.id});
     }
   });
@@ -749,7 +778,7 @@ function scheduleStep(n, t){
   if (s === 0) layers.forEach(L => {
     if ((L.mode !== 'plain' && L.mode !== 'tune') || L.muted) return;
     const V = VOICES[L.voice], rate = L.mode === 'plain' ? V.rate : 1;
-    const need = L.buf.duration / rate / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
+    const need = L.buf.duration / rate / (sd * BAR), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
     if (bar8 % bars) return;
     choke(L, t);
     if (L.mode === 'plain'){ playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); return; }
@@ -764,7 +793,7 @@ function scheduleStep(n, t){
     if (L.muted || L.mode !== 'inst' || !L.take) return;
     const pcs = keyScale(S), key = pcs.join();
     if (L.nkey !== key){ L.nkey = key; L.notes = transcribe(L.take, pcs); }
-    const need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * 16, I = INSTS[L.inst || 0];
+    const need = L.buf.duration / (sd * BAR), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * BAR, I = INSTS[L.inst || 0];
     L.notes.forEach(o => {
       if (Math.round(o.at / sd) % period !== n % period) return;
       if (o.drum){ if (o.drum === 'k') kick(t); else if (o.drum === 's') snare(t); else hat(t, 1); }
@@ -778,12 +807,12 @@ function scheduleStep(n, t){
   });
   layers.forEach(L => {
     if (L.muted || L.mode !== 'band' || !L.take) return;
-    const key = S.name + '|' + tempo;
+    const key = S.name + '|' + tempo + '|' + sigIx;
     if (L.bkey !== key){ L.bkey = key; L.band = buildBand(L, S, sd); }
     const I = INSTS[L.inst || 0]; let lead = false;
     L.band.ev[n % L.band.period].forEach(e => {
       if (e.d){ if (parts.drums){ if (e.d === 'k') kick(t); else if (e.d === 's') snare(t); else hat(t, .7); } }
-      else if (e.ch){ if (parts.chords) e.ch.forEach(m => tone(t, m, sd * 15.5, 'triangle', .09, 1800, .03)); }
+      else if (e.ch){ if (parts.chords) e.ch.forEach(m => tone(t, m, sd * (BAR - .5), 'triangle', .09, 1800, .03)); }
       else if (e.b){ if (parts.bass) tone(t, e.b, sd * e.len * .92, S.bw || 'triangle', S.bv || .5, S.bc || 700); }
       else {
         let m = e.m; while (m < 60) m += 12; while (m > 84) m -= 12;
@@ -795,7 +824,7 @@ function scheduleStep(n, t){
   });
   layers.forEach(L => {
     if (L.muted || L.mode !== 'beat' || !L.take) return;
-    if (L.tkey !== tempo){ L.tkey = tempo; L.beat = buildBeat(L, sd); }
+    if (L.tkey !== tempo + '|' + sigIx){ L.tkey = tempo + '|' + sigIx; L.beat = buildBeat(L, sd); }
     const d = L.beat.ev[n % L.beat.period];
     if (!d) return;
     if (d === 'k') kick(t); else if (d === 's') snare(t); else hat(t, 1);
@@ -805,19 +834,19 @@ function scheduleStep(n, t){
      Chop up plays it as half-beat slices, following the monster's chop pattern. */
   layers.forEach(L => {
     if (L.muted || (L.mode !== 'fit' && L.mode !== 'chop')) return;
-    const len = L.buf.duration, bar = sd * 16;
-    let bars = 8, best = 99;
-    [.25,.5,1,2,4,8].forEach(b => { const d = Math.abs(Math.log(len / (b * bar))); if (d < best){ best = d; bars = b; } });
-    const period = bars * 16, rate = len / (bars * bar), at = n % period;
+    const len = L.buf.duration;
+    let period = BAR, best = 99;                            // loop length in steps: a part of a bar, or 1 to 8 bars
+    [.25,.5,1,2,4,8].forEach(b => { const st = b * BAR, d = Math.abs(Math.log(len / (st * sd))); if (st % 2 === 0 && d < best){ best = d; period = st; } });
+    const rate = len / (period * sd), at = n % period;
     if (L.mode === 'fit'){
       if (at === 0){ choke(L, t); playBuf(L, L.buf, t, rate, 1); }
-      if (s % 4 === 0) vis.push({t, id:L.id});
-    } else if (s % 2 === 0){
+      if (s % BEAT === 0) vis.push({t, id:L.id});
+    } else if (at % 2 === 0){
       const N = period / 2, ix = at / 2, p = L.pat[ix % 64], slice = p < 0 ? ix : Math.floor(p * N);
       choke(L, t); playBuf(L, L.buf, t, rate, 1, sd * 2, slice * len / N); vis.push({t, id:L.id});
     }
   });
-  vis.push({t, step:n});
+  if (s % BEAT === 0) vis.push({t, beat: s / BEAT});
 }
 
 function choke(L, t){
@@ -862,10 +891,10 @@ function playBuf(L, buf, t, rate, vol, dur, off){
 
 function tick(){
   while (nextT < ctx.currentTime + .14){
-    const sd = stepDur(), s = step % 16; let off = 0;
-    if (style.sw){ if (style.sw8){ if (s % 4 === 2) off = style.sw * sd * 2; } else if (s % 2 === 1) off = style.sw * sd; }
+    const sd = stepDur(), s = MAP[step % BAR]; let off = 0;
+    if (style.sw && BEAT === 4){ if (style.sw8){ if (s % 4 === 2) off = style.sw * sd * 2; } else if (s % 2 === 1) off = style.sw * sd; }
     scheduleStep(step, nextT + off);
-    nextT += sd; step = (step + 1) % 512;
+    nextT += sd; step = (step + 1) % (BAR * 32);
   }
 }
 async function start(){
@@ -975,7 +1004,7 @@ function addLayer(buf, mode, kind){
   kind = kind || 'voice';
   if (layers.length >= MAX_LAYERS){ say('The stage is full. Remove a monster to make room.'); return; }
   const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), buf.sampleRate), mode,
-    rhythm: buf.duration > stepDur() * 16 ? 0 : 1, voice: 0, muted: false, harmony: false, echo: false,
+    rhythm: buf.duration > stepDur() * BAR ? 0 : 1, voice: 0, muted: false, harmony: false, echo: false,
     seed: Math.random() * 1e9 | 0, look: colorIx++, cur: []};
   arrange(L);
   layers.push(L); selId = L.id;
@@ -1043,7 +1072,21 @@ function drawKinds(){
     say(i ? 'Music: hold the button near the music for up to 16 seconds.' : 'Voice: hold the button and say something.');
   });
 }
+function setSig(i){
+  sigIx = i; MAP = SIGS[i].map; BAR = MAP.length; BEAT = SIGS[i].div;
+  step = 0; layers.forEach(L => { L.next = 0; if (ctx) choke(L, ctx.currentTime); });   // start again from beat one
+  if (ctx) nextT = Math.max(nextT, ctx.currentTime + .05);
+  $('#dots').innerHTML = '<i class="dot"></i>'.repeat(BAR / BEAT);
+  if (echoDelay) echoDelay.delayTime.value = Math.min(1, stepDur() * 3);
+}
+function setPhase(i){
+  phaseIx = i;
+  if (ctx){ phaseWet.gain.setTargetAtTime(PHASES[i].wet, ctx.currentTime, .05); phaseLfo.frequency.value = PHASES[i].hz; }
+}
 function drawBand(){
+  chipRow($('#sigs'), SIGS, i => i === sigIx, i => { setSig(i); drawBand(); });
+  chipRow($('#octs'), OCTS, i => i === octIx, i => { octIx = i; drawBand(); });
+  chipRow($('#phases'), PHASES, i => i === phaseIx, i => { setPhase(i); drawBand(); });
   chipRow($('#parts'), PARTS, i => parts[PARTS[i].id], i => { parts[PARTS[i].id] = !parts[PARTS[i].id]; drawBand(); });
   chipRow($('#keys'), KEYS, i => i === keySound, i => { keySound = i; drawBand(); });
 }
@@ -1096,10 +1139,7 @@ function frame(){
     vis = vis.filter(v => {
       if (v.t > now) return true;
       if (v.id != null) sing(v.id);
-      else if (v.step % 4 === 0){
-        const k = (v.step % 16) / 4;
-        document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('lit', i === k));
-      }
+      else document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('lit', i === v.beat));
       return false;
     });
   }
@@ -1196,7 +1236,7 @@ async function writeSong(asNew){
       entry = {id: 's' + Date.now().toString(36)}; ix.push(entry);
     }
     entry.name = name; entry.style = style.name; entry.at = new Date().toISOString();
-    await dbSet('song:' + entry.id, {v:1, style:style.name, variant:styleVar, tempo, parts:Object.assign({}, parts), keySound,
+    await dbSet('song:' + entry.id, {v:1, style:style.name, variant:styleVar, tempo, parts:Object.assign({}, parts), keySound, sig:sigIx, oct:octIx, phase:phaseIx,
       layers: layers.map(L => ({sr:L.buf.sampleRate, data:L.buf.getChannelData(0).slice(), mode:L.mode, rhythm:L.rhythm,
         voice:L.voice, harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0}))});
     await dbSet('index', ix);
@@ -1220,6 +1260,7 @@ async function loadSong(id){
     colorIx = layers.reduce((m, L) => Math.max(m, L.look + 1), 0); selId = null;
     pickStyle(STYLES.find(x => x.name === s.style) || STYLES[0], s.variant || 0); setTempo(s.tempo);
     Object.assign(parts, s.parts); keySound = s.keySound || 0;
+    setSig(s.sig || 0); octIx = s.oct == null ? 1 : s.oct; setPhase(s.phase || 0);
     curId = id; curName = entry.name;
     drawBeats(); drawBand(); drawLayers(); say('Now playing "' + entry.name + '".'); start();
   } catch(e){ say("That song couldn't be opened."); }
@@ -1275,7 +1316,7 @@ twoTap($('#forget'), 'Delete all', 'Tap again to delete all', async () => {
 });
 
 $('#ver').textContent = 'Version ' + VERSION;
-setTempo(style.bpm); drawBeats(); drawKinds(); drawBand(); drawLayers(); drawRec(); frame();
+setSig(0); setTempo(style.bpm); drawBeats(); drawKinds(); drawBand(); drawLayers(); drawRec(); frame();
 })();
 </script>
 </body>
