@@ -173,7 +173,8 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
   </details>
 
   <div class="recwrap">
-    <div class="chips" id="kinds" style="justify-content:center;margin-bottom:26px" aria-label="What to record"></div>
+    <div class="chips" id="kinds" style="justify-content:center;margin-bottom:10px" aria-label="What to record"></div>
+    <div class="chips" style="justify-content:center;margin-bottom:26px"><button class="btn small" id="micready" aria-pressed="false">🎤 Mic ready: off</button></div>
     <button id="rec" aria-label="Hold to record your voice">
       <svg class="ring" viewBox="0 0 160 160" aria-hidden="true"><circle cx="80" cy="80" r="74"/></svg>
       <svg class="mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
@@ -267,7 +268,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.19.0';   // bump this with each release
+const VERSION = '1.20.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -1111,6 +1112,29 @@ function stop(){
 function say(msg){ $('#status').textContent = msg; }
 
 let holding = false, recStart = 0, heldMs = 0;
+/* Mic ready: opening the microphone is the slow part of starting a take, and on phones it also makes the music hiccup.
+   With this on, the mic is opened once and kept open, so a voice take starts the instant the button is pressed.
+   The cost is that the mic (and the phone's mic indicator) stays on until it is switched off or the app is hidden. */
+let warm = null;
+function drawMic(){ const b = $('#micready'); b.textContent = '🎤 Mic ready: ' + (warm ? 'on' : 'off'); b.classList.toggle('on', !!warm); b.setAttribute('aria-pressed', !!warm); }
+function micOff(){
+  if (!warm) return;
+  if (stream !== warm) warm.getTracks().forEach(tr => tr.stop());   // if a take is using it, recDone closes it
+  warm = null; if (recState === 'idle') soundMode('playback'); drawMic();
+}
+async function micOn(){
+  try {
+    initAudio(); soundMode('play-and-record');
+    if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('unsupported');
+    warm = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true}});
+    warm.getAudioTracks()[0].onended = () => { if (warm) { warm = null; drawMic(); } };
+    try { const st = warm.getAudioTracks()[0].getSettings(); diag.mic = 'kept ready, echoCancel ' + st.echoCancellation + ', rate ' + st.sampleRate; } catch(e){}
+    ctx.resume().catch(() => {});
+    say('Mic is on and ready, so recording starts the moment you press. Switch it off when you are done.');
+  } catch(e){ warm = null; soundMode('playback'); say('The microphone is blocked here. Allow the mic, or try a silly sound below.'); }
+  drawMic();
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) micOff(); });   // never leave the mic on in the background
 const diag = {mic:'not used yet', take:'none yet'};
 function showDiag(){
   const el = $('#ver'); if (!el.dataset.open){ el.textContent = 'Version ' + VERSION; return; }
@@ -1127,6 +1151,8 @@ async function beginRec(){
     initAudio(); ctx.resume().catch(() => {});      // don't wait: the press hasn't finished, so the phone may not answer yet
     if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('unsupported');
     takeKind = KINDS[recKind].id;
+    if (warm && takeKind === 'voice') stream = warm;         // mic already open: no waiting
+    else {
     soundMode('play-and-record');
     /* Voice keeps echo cancelling on: with it off, iPhones record very quietly and play through the earpiece.
        Music turns the call clean-up off because it mangles music, at the cost of a quieter take on iPhone. */
@@ -1134,16 +1160,17 @@ async function beginRec(){
       ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false}
       : {echoCancellation:true}});
     try { const st = stream.getAudioTracks()[0].getSettings(); diag.mic = 'echoCancel ' + st.echoCancellation + ', rate ' + st.sampleRate; } catch(e){}
+    }
     ctx.resume().catch(() => {});
   } catch(e){
-    soundMode('playback');
+    if (!warm) soundMode('playback');
     recState = 'idle'; drawRec();
     say('The microphone is blocked here. Allow the mic, or try a silly sound below.');
     return;
   }
   if (!holding){            // finger came off while the mic was starting (or to answer the permission question)
-    stream.getTracks().forEach(tr => tr.stop()); stream = null; soundMode('playback');
-    recState = 'idle'; drawRec(); say(HOLD_MSG); return;
+    if (stream !== warm){ stream.getTracks().forEach(tr => tr.stop()); if (!warm) soundMode('playback'); }
+    stream = null; recState = 'idle'; drawRec(); say(HOLD_MSG); return;
   }
   chunks = [];
   rec = new MediaRecorder(stream);
@@ -1163,8 +1190,8 @@ function stopRec(){
   setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, 250);   // catch the tail of the last word
 }
 async function recDone(){
-  stream.getTracks().forEach(tr => tr.stop()); stream = null;   // mic off between takes
-  soundMode('playback');
+  if (stream !== warm){ stream.getTracks().forEach(tr => tr.stop()); if (!warm) soundMode('playback'); }   // mic off between takes, unless kept ready
+  stream = null;
   ctx.resume().catch(() => {});
   duck.gain.setTargetAtTime(1, ctx.currentTime, .05);
   if (heldMs < 350){ chunks = []; recState = 'idle'; drawRec(); say(HOLD_MSG); return; }
@@ -1388,6 +1415,7 @@ recBtn.addEventListener('contextmenu', e => e.preventDefault());
 recBtn.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat){ e.preventDefault(); beginRec(); } });
 recBtn.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); endRec(); } });
 recBtn.addEventListener('blur', endRec);
+$('#micready').onclick = () => { if (recState !== 'idle') return; if (warm) { micOff(); say('Mic is off.'); } else micOn(); };
 $('#vol').oninput = e => { if (beatBus) beatBus.gain.value = e.target.value / 100; };
 $('#tempo').oninput = e => setTempo(e.target.value);
 document.querySelectorAll('[data-silly]').forEach(b => b.onclick = async () => { await wake(); addLayer(sillyBuf(b.dataset.silly), 'loop'); });
