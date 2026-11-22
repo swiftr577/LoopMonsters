@@ -165,6 +165,13 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
     </div>
   </section>
 
+  <details class="panel band" id="tweaks" hidden>
+    <summary>Voice tweaks</summary>
+    <div id="tweakrows"></div>
+    <p style="font-weight:700;color:var(--muted);margin:4px 0 12px">Speed works in As recorded and Loop. In those two, Pitch also changes the speed. Picking a different voice resets these.</p>
+    <button class="btn small" id="tweakreset">Reset to this voice</button>
+  </details>
+
   <div class="recwrap">
     <div class="chips" id="kinds" style="justify-content:center;margin-bottom:26px" aria-label="What to record"></div>
     <button id="rec" aria-label="Hold to record your voice">
@@ -260,7 +267,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.16.2';   // bump this with each release
+const VERSION = '1.17.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -383,17 +390,36 @@ const RHYTHMS = [
 ];
 const VOICES = [
   {name:'Normal',icon:'🙂',rate:1,shift:0},
-  {name:'Chipmunk',icon:'🐿️',rate:1.6,shift:12},
-  {name:'Monster',icon:'👹',rate:.62,shift:-12},
+  {name:'Chipmunk',icon:'🐿️',rate:1.6,shift:12,sp:.8},
+  {name:'Monster',icon:'👹',rate:.62,shift:-12,sp:1.25},
   {name:'Robot',icon:'🤖',rate:1,shift:0,ring:55},
   /* ring = buzz (Hz); vib = wobble [times a second, depth in seconds]; hall = big-room echo; filt = [type, Hz, Q, dB] */
   {name:'Opera',icon:'🎭',rate:1,shift:0,vib:[5.8,.0016],hall:.8,filt:['peaking',2800,1.2,9]},
-  {name:'Alien',icon:'👽',rate:1.15,shift:0,ring:210,vib:[9,.0012]},
-  {name:'Ghost',icon:'👻',rate:.9,shift:0,vib:[2.2,.004],hall:1,filt:['highpass',500,.7]},
+  {name:'Alien',icon:'👽',rate:1.15,shift:0,sp:1.15,ring:210,vib:[9,.0012]},
+  {name:'Ghost',icon:'👻',rate:.9,shift:0,sp:.9,vib:[2.2,.004],hall:1,tone:.55},
   {name:'Radio',icon:'📻',rate:1,shift:0,filt:['bandpass',1600,1.4],drive:true,gain:1.5},
-  {name:'Underwater',icon:'🫧',rate:1,shift:0,filt:['lowpass',600,4],vib:[1.3,.005],gain:1.6},
+  {name:'Underwater',icon:'🫧',rate:1,shift:0,tone:-.8,vib:[1.3,.005],gain:1.6},
   {name:'Backwards',icon:'⏪',rate:1,shift:0,rev:true}
 ];
+/* Voice tweaks: every voice is a starting set of these values, and the sliders change them for one monster. */
+const pct = v => Math.round(v * 100) + '%';
+const TWEAKS = [
+  {k:'pitch', name:'Pitch', min:-12, max:12, step:1, fmt:v => v ? (v > 0 ? '+' : '') + v + ' notes' : 'normal'},
+  {k:'speed', name:'Speed', min:.5, max:2, step:.05, fmt:v => v.toFixed(2) + ' times'},
+  {k:'wob', name:'Wobble', min:0, max:6, step:.2, fmt:v => v ? v.toFixed(1) : 'off'},
+  {k:'wobHz', name:'Wobble speed', min:.5, max:12, step:.5, fmt:v => v + ' a second'},
+  {k:'buzz', name:'Robot buzz', min:0, max:300, step:5, fmt:v => v ? v + ' Hz' : 'off'},
+  {k:'room', name:'Big room', min:0, max:1, step:.05, fmt:v => v ? pct(v) : 'off'},
+  {k:'tone', name:'Tone', min:-1, max:1, step:.05, fmt:v => v < -.02 ? 'muffled ' + pct(-v) : v > .02 ? 'thin ' + pct(v) : 'normal'},
+  {k:'crunch', name:'Crunch', min:0, max:1, step:.05, fmt:v => v ? pct(v) : 'off'}
+];
+function voiceFx(i){
+  const V = VOICES[i] || VOICES[0];
+  return {pitch:V.shift || 0, speed:V.sp || 1, wob:V.vib ? V.vib[1] * 1000 : 0, wobHz:V.vib ? V.vib[0] : 5, buzz:V.ring || 0,
+    room:V.hall || 0, tone:V.tone || 0, crunch:V.drive ? 1 : 0};
+}
+const fxOf = L => L.fx || (L.fx = voiceFx(L.voice));
+const rawRate = L => { const F = fxOf(L); return F.speed * Math.pow(2, F.pitch / 12); };   // untuned playback: pitch and speed move together
 const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'Band',icon:'🎺',id:'band'},{name:'Beat',icon:'🥁',id:'beat'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const MODES_MUSIC = [{name:'Fit to beat',icon:'🎯',id:'fit'},{name:'Chop up',icon:'✂️',id:'chop'},{name:'As recorded',icon:'📼',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const KINDS = [{name:'Voice',icon:'🗣️',id:'voice',secs:10},{name:'Music',icon:'🎸',id:'music',secs:16}];
@@ -419,7 +445,7 @@ const MAX_LAYERS = 6;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 let ctx, beatBus, sampleBus, duck, gate, noiseBuf, echoIn, echoDelay, hallIn;
-const driveCurve = Float32Array.from({length:256}, (_, i) => Math.tanh(4 * (i / 127.5 - 1))), revCache = new WeakMap();
+const curves = new Map(), revCache = new WeakMap();
 let styleBase = STYLES[0], styleVar = 0, style = STYLES[0], tempo = style.bpm, keySound = 0, playing = false, step = 0, nextT = 0, timer = null, vis = [];
 const parts = {}; PARTS.forEach(p => parts[p.id] = p.on);
 let layers = [], selId = null, uid = 0, colorIx = 0;
@@ -848,24 +874,24 @@ function scheduleStep(n, t){
   const e = lead && lead.ev[bar * 16 + ps];
   if (e){
     const si = lead.next++ % lead.take.segs.length;       // next syllable; wraps only after the last one
-    const lad = ladder(root, type, lead.take.center), V = VOICES[lead.voice];
+    const lad = ladder(root, type, lead.take.center + fxOf(lead).pitch);
     const ix = clamp(lad.mid + e.off, 0, lad.notes.length - 1), midi = lad.notes[ix], dur = e.len * sd;
     choke(lead, t);
-    playBuf(lead, tuned(lead.take, si, midi + V.shift), t, 1, 1, dur);
-    if (lead.harmony && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, si, lad.notes[ix + 1] + V.shift), t, 1, .55, dur);
+    playBuf(lead, tuned(lead.take, si, midi), t, 1, 1, dur);
+    if (lead.harmony && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, si, lad.notes[ix + 1]), t, 1, .55, dur);
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
-    vis.push({t, id:lead.id}); mark('L' + lead.id, midi + V.shift, e.len);
+    vis.push({t, id:lead.id}); mark('L' + lead.id, midi, e.len);
   }
   layers.forEach(L => {
     if (L.mode === 'loop' && !L.muted && RHYTHMS[L.rhythm].fn(ps, bar)){
-      choke(L, t); playBuf(L, L.buf, t, VOICES[L.voice].rate, 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / VOICES[L.voice].rate / sd);
+      choke(L, t); playBuf(L, L.buf, t, rawRate(L), 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rawRate(L) / sd);
     }
   });
   /* as recorded, or auto-tuned: the whole take in its own timing, repeating every 1, 2, 4 or 8 bars, whichever it fits in.
      Auto-tune keeps each syllable where it was spoken but pulls its pitch onto the nearest note of the beat's key. */
   if (s === 0) layers.forEach(L => {
     if ((L.mode !== 'plain' && L.mode !== 'tune') || L.muted || L.b0 == null) return;
-    const V = VOICES[L.voice], rate = L.mode === 'plain' ? V.rate : 1;
+    const P = fxOf(L).pitch, rate = L.mode === 'plain' ? rawRate(L) : 1;
     const need = L.buf.duration / rate / (sd * BAR), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
     if (pos(L) % (bars * BAR)) return;
     choke(L, t);
@@ -879,20 +905,20 @@ function scheduleStep(n, t){
     L.take.segs.forEach((g, i) => {
       const at = t + g.a / L.take.sr; let m = 60;
       if (g.med){
-        const sung = 69 + 12 * Math.log2(g.med / 440);
-        if (A === 'one') m = snap(L.take.center, [S.key % 12]);
+        const sung = 69 + 12 * Math.log2(g.med / 440) + P;
+        if (A === 'one') m = snap(L.take.center + P, [S.key % 12]);
         else if (A === 'chord'){
           const c = S.prog[(bar + Math.floor(g.a / L.take.sr / (sd * BAR))) % 4];
           m = snap(sung, CHORDS[c[1]].map(iv => (S.key + c[0] + iv) % 12));
         } else m = snap(sung, pcs);
       }
-      playBuf(L, tuned(L.take, i, m + V.shift, kind, A === 'glide' && prev != null ? prev + V.shift : null), at, 1, 1);
+      playBuf(L, tuned(L.take, i, m, kind, A === 'glide' && prev != null ? prev : null), at, 1, 1);
       if (A === 'choir' && g.med){
-        playBuf(L, tuned(L.take, i, snap(m + 3.5, five) + V.shift), at, 1, .5);
-        playBuf(L, tuned(L.take, i, m - 12 + V.shift), at, 1, .5);
+        playBuf(L, tuned(L.take, i, snap(m + 3.5, five)), at, 1, .5);
+        playBuf(L, tuned(L.take, i, m - 12), at, 1, .5);
       }
       if (g.med) prev = m;
-      vis.push({t:at, id:L.id}); mark('L' + L.id, g.med ? m + V.shift : 0, (g.b - g.a) / L.take.sr / sd, Math.round((at - t) / sd));
+      vis.push({t:at, id:L.id}); mark('L' + L.id, g.med ? m : 0, (g.b - g.a) / L.take.sr / sd, Math.round((at - t) / sd));
     });
   });
   /* instrument: the hummed tune played as notes (and beatbox noises as drums), snapped to the key and to the beat grid */
@@ -975,7 +1001,8 @@ function reversed(buf){
   return r;
 }
 function playBuf(L, buf, t, rate, vol, dur, off){
-  const V = L.mode === 'fit' || L.mode === 'chop' ? VOICES[0] : VOICES[L.voice] || VOICES[0];
+  const plain = L.mode === 'fit' || L.mode === 'chop';        // sampled music is never voiced
+  const V = plain ? VOICES[0] : VOICES[L.voice] || VOICES[0], F = plain ? voiceFx(0) : fxOf(L);
   if (V.rev) buf = reversed(buf);
   const src = ctx.createBufferSource(); src.buffer = buf; src.playbackRate.value = rate;
   const life = buf.duration / rate + .6;
@@ -985,16 +1012,26 @@ function playBuf(L, buf, t, rate, vol, dur, off){
   };
   let node = src;
   const into = next => { node.connect(next); node = next; };
-  if (V.ring){ const r = ctx.createGain(); r.gain.value = 0; lfo(V.ring, 1, r.gain); into(r); vol *= 1.7; }
-  if (V.filt){
+  if (F.buzz > 0){ const r = ctx.createGain(); r.gain.value = 0; lfo(F.buzz, 1, r.gain); into(r); vol *= 1.7; }
+  if (V.filt){                                               // part of the voice's character (Opera, Radio)
     const f = ctx.createBiquadFilter(); f.type = V.filt[0]; f.frequency.value = V.filt[1]; f.Q.value = V.filt[2];
     if (V.filt[3]) f.gain.value = V.filt[3]; into(f);
   }
-  if (V.drive){ const w = ctx.createWaveShaper(); w.curve = driveCurve; into(w); }
-  if (V.vib){ const d = ctx.createDelay(.05); d.delayTime.value = V.vib[1] + .002; lfo(V.vib[0], V.vib[1], d.delayTime); into(d); }
+  if (Math.abs(F.tone) > .02){                               // tone: below zero muffles (cuts highs), above zero thins (cuts lows)
+    const f = ctx.createBiquadFilter(), k = Math.abs(F.tone);
+    if (F.tone < 0){ f.type = 'lowpass'; f.frequency.value = 8000 * Math.pow(300 / 8000, k); f.Q.value = 1 + 3 * k; }
+    else { f.type = 'highpass'; f.frequency.value = 80 * Math.pow(2500 / 80, k); f.Q.value = .7; }
+    into(f);
+  }
+  if (F.crunch > .02){
+    const key = Math.round(F.crunch * 20); let curve = curves.get(key);
+    if (!curve){ curve = Float32Array.from({length:256}, (_, i) => Math.tanh((1 + 3 * key / 20) * (i / 127.5 - 1))); curves.set(key, curve); }
+    const w = ctx.createWaveShaper(); w.curve = curve; into(w);
+  }
+  if (F.wob > 0){ const depth = F.wob / 1000, d = ctx.createDelay(.05); d.delayTime.value = depth + .002; lfo(F.wobHz, depth, d.delayTime); into(d); }
   const g = ctx.createGain(); g.gain.value = vol * (V.gain || 1); node.connect(g);
   g.connect(sampleBus); if (L.echo) g.connect(echoIn);
-  if (V.hall){ const send = ctx.createGain(); send.gain.value = V.hall; g.connect(send); send.connect(hallIn); }
+  if (F.room > 0){ const send = ctx.createGain(); send.gain.value = F.room; g.connect(send); send.connect(hallIn); }
   src.start(t, off || 0);
   if (dur){ g.gain.setTargetAtTime(0, t + dur, .03); src.stop(t + dur + .2); }
   L.cur.push({src, g});
@@ -1132,7 +1169,7 @@ function addLayer(buf, mode, kind){
   kind = kind || 'voice';
   if (layers.length >= MAX_LAYERS){ say('The stage is full. Remove a monster to make room.'); return; }
   const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), buf.sampleRate), mode,
-    rhythm: buf.duration > stepDur() * BAR ? 0 : 1, voice: 0, muted: false, harmony: false, echo: false,
+    rhythm: buf.duration > stepDur() * BAR ? 0 : 1, voice: 0, fx: voiceFx(0), muted: false, harmony: false, echo: false,
     seed: Math.random() * 1e9 | 0, look: colorIx++, cur: []};
   arrange(L);
   layers.push(L); selId = L.id;
@@ -1238,7 +1275,7 @@ function drawLayers(){
 const sel = () => layers.find(l => l.id === selId);
 function drawPanel(){
   const L = sel(), p = $('#panel');
-  p.hidden = !L; if (!L) return;
+  p.hidden = !L; if (!L){ $('#tweaks').hidden = true; return; }
   const modes = L.kind === 'music' ? MODES_MUSIC : MODES;
   chipRow($('#modes'), modes, i => modes[i].id === L.mode, i => {
     L.mode = modes[i].id; restart(L); drawPanel();
@@ -1254,9 +1291,23 @@ function drawPanel(){
   chipRow($('#tunes'), TUNES, i => i === (L.tstyle || 0), i => { L.tstyle = i; restart(L); drawPanel(); });
   chipRow($('#insts'), INSTS, i => i === (L.inst || 0), i => { L.inst = i; drawPanel(); });
   chipRow($('#rhythms'), RHYTHMS, i => i === L.rhythm, i => { L.rhythm = i; drawPanel(); });
-  chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; restart(L); drawPanel(); });
+  chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; L.fx = voiceFx(i); restart(L); drawPanel(); });   // new voice, default tweaks
+  drawTweaks(L);
   [['#harmony', L.harmony], ['#echo', L.echo]].forEach(([id, v]) => { $(id).classList.toggle('on', v); $(id).setAttribute('aria-pressed', v); });
   $('#mute').textContent = L.muted ? '⏰ Wake up' : '😴 Sleep';
+}
+function drawTweaks(L){
+  const box = $('#tweaks'), rows = $('#tweakrows'), F = fxOf(L);
+  box.hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);   // only where the voice itself is heard
+  rows.innerHTML = '';
+  TWEAKS.forEach(T => {
+    const lab = document.createElement('label'), name = document.createElement('span'), inp = document.createElement('input'), val = document.createElement('span');
+    lab.className = 'slide'; name.textContent = T.name; name.style.minWidth = '6.2em'; val.style.minWidth = '5.6em'; val.style.textAlign = 'right';
+    inp.type = 'range'; inp.min = T.min; inp.max = T.max; inp.step = T.step; inp.value = F[T.k]; val.textContent = T.fmt(F[T.k]);
+    inp.oninput = () => { F[T.k] = +inp.value; val.textContent = T.fmt(F[T.k]); };
+    inp.onchange = () => restart(L);                         // hear it from the next bar once the slider is let go
+    lab.append(name, inp, val); rows.appendChild(lab);
+  });
 }
 function sing(id){
   const el = document.getElementById('blob' + id); if (!el || !el.animate) return;
@@ -1296,6 +1347,7 @@ $('#vol').oninput = e => { if (beatBus) beatBus.gain.value = e.target.value / 10
 $('#tempo').oninput = e => setTempo(e.target.value);
 document.querySelectorAll('[data-silly]').forEach(b => b.onclick = async () => { await wake(); addLayer(sillyBuf(b.dataset.silly), 'loop'); });
 $('#newtune').onclick = () => { const L = sel(); if (!L) return; L.seed = Math.random() * 1e9 | 0; arrange(L); say(L.mode === 'chop' ? 'New chop!' : 'New tune!'); if (!playing) start(); };
+$('#tweakreset').onclick = () => { const L = sel(); if (!L) return; L.fx = voiceFx(L.voice); restart(L); drawPanel(); };
 $('#harmony').onclick = () => { const L = sel(); if (!L) return; L.harmony = !L.harmony; drawPanel(); };
 $('#echo').onclick = () => { const L = sel(); if (!L) return; L.echo = !L.echo; drawPanel(); };
 $('#mute').onclick = () => {
@@ -1376,7 +1428,7 @@ async function writeSong(asNew){
     entry.name = name; entry.style = style.name; entry.at = new Date().toISOString();
     await dbSet('song:' + entry.id, {v:1, style:style.name, variant:styleVar, tempo, parts:Object.assign({}, parts), keySound, sig:sigIx, oct:octIx, phase:phaseIx,
       layers: layers.map(L => ({sr:L.buf.sampleRate, data:L.buf.getChannelData(0).slice(), mode:L.mode, rhythm:L.rhythm,
-        voice:L.voice, harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0, tstyle:L.tstyle || 0}))});
+        voice:L.voice, fx:Object.assign({}, fxOf(L)), harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0, tstyle:L.tstyle || 0}))});
     await dbSet('index', ix);
     curId = entry.id; curName = name;
     say('Saved "' + name + '" on this device.');
@@ -1391,7 +1443,7 @@ async function loadSong(id){
     layers = s.layers.map(o => {
       const buf = ctx.createBuffer(1, o.data.length, o.sr); buf.getChannelData(0).set(o.data);
       const kind = o.kind || 'voice';
-      const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice,
+      const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice, fx:Object.assign(voiceFx(o.voice), o.fx || {}),
         harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, inst:o.inst || 0, tstyle:o.tstyle || 0, cur:[]};
       arrange(L); return L;
     });
