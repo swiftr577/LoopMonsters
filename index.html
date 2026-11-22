@@ -140,6 +140,8 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       <div class="chips">
         <button class="btn small" id="newtune">🎲 New tune</button>
         <button class="btn small" id="harmony" aria-pressed="false">👯 Backing singer</button>
+        <button class="btn small" id="chorus" aria-pressed="false">🔁 Chorus</button>
+        <button class="btn small" id="hold" aria-pressed="false">🎵 Hold notes</button>
       </div>
     </div>
     <div id="loopopts">
@@ -268,7 +270,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.20.0';   // bump this with each release
+const VERSION = '1.21.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -571,7 +573,29 @@ function analyse(x, sr){
   return {data:x, sr, f0, rms, thr, hopS, offS, segs, center: all ? 69 + 12 * Math.log2(all / 440) : 60, cache:new Map()};
 }
 /* Hard-tune one piece to a note: read it faster or slower, moment by moment, so its pitch stays flat on the target. */
-function tuneData(T, si, midi, kind, from){
+/* Hold a note. A hard-tuned syllable has one steady pitch, so a slice of its vowel that is a whole number of pitch
+   periods long can be repeated seamlessly, like a sampler's sustain loop. Picks the loudest stretch near the middle. */
+function sustain(out, sr, f, want){
+  const n = out.length;
+  if (want <= n * 1.08 || n < sr * .06) return out;
+  want = Math.min(want, n * 4);
+  const per = sr / f, Lp = Math.round(Math.max(2, Math.round(.035 * sr / per)) * per), xf = Math.min(Lp >> 2, Math.floor(sr * .004));
+  const lo = Math.floor(n * .25), hi = Math.floor(n * .8) - Lp - xf;
+  if (hi <= lo) return out;
+  let a = lo, best = -1;
+  for (let s = lo; s <= hi; s += Lp >> 1){ let e = 0; for (let i = 0; i < Lp; i += 4) e += out[s + i] * out[s + i]; if (e > best){ best = e; a = s; } }
+  const b = a + Lp, reps = Math.ceil((want - n) / Lp), res = new Float32Array(n + reps * Lp);
+  res.set(out.subarray(0, b), 0);
+  let w = b;
+  for (let r = 0; r < reps; r++) for (let i = 0; i < Lp; i++){
+    let v = out[a + i];
+    if (i < xf){ const k = i / xf; v = v * k + out[b + i] * (1 - k); }   // blend across the join
+    res[w++] = v;
+  }
+  res.set(out.subarray(b), w);
+  return res;
+}
+function tuneData(T, si, midi, kind, from, fill){
   const seg = T.segs[si], x = T.data, n = seg.b - seg.a, sr = T.sr;
   let out;
   if (!seg.med) out = x.slice(seg.a, seg.b);
@@ -589,6 +613,7 @@ function tuneData(T, si, midi, kind, from){
       pos += rs;
     }
     out = tmp.slice(0, k);
+    if (fill && !kind) out = sustain(out, sr, target, Math.floor(fill * sr));
   }
   const fi = Math.min(out.length >> 1, Math.floor(sr * .003)), fo = Math.min(out.length >> 1, Math.floor(sr * .015));
   for (let i = 0; i < fi; i++) out[i] *= i / fi;
@@ -644,10 +669,10 @@ function buildBeat(L, sd){
   return {period, ev};
 }
 /*ENDDSP*/
-function tuned(T, si, midi, kind, from){
-  const key = si + '/' + midi + (kind ? '/' + kind + '/' + from : ''); let b = T.cache.get(key);
+function tuned(T, si, midi, kind, from, fill){
+  const key = si + '/' + midi + (kind ? '/' + kind + '/' + from : '') + (fill ? '/f' + Math.round(fill * 50) : ''); let b = T.cache.get(key);
   if (!b){
-    const d = tuneData(T, si, midi, kind, from);
+    const d = tuneData(T, si, midi, kind, from, fill);
     b = ctx.createBuffer(1, Math.max(1, d.length), T.sr); b.getChannelData(0).set(d);
     if (T.cache.size > Math.max(300, T.segs.length * 8)) T.cache.clear();   // keep memory in check on phones
     T.cache.set(key, b);
@@ -674,6 +699,18 @@ function arrange(L){
   L.ev = {}; let si = 0;
   mel.forEach(m => { L.ev[m.st] = {len:m.len, off:m.off}; });
   L.next = 0;
+  /* Chorus: split the take into phrases at the pauses, pick one of 3 to 8 syllables as the hook, and give it a
+     two-bar tune of its own that sits a little higher and repeats exactly. */
+  const hr = rng(L.seed ^ 0x9e3779b9), segs = L.take.segs, phrases = [[]];
+  segs.forEach((g, i) => { if (i && g.a - segs[i - 1].b > .08 * L.take.sr) phrases.push([]); phrases[phrases.length - 1].push(i); });
+  const cands = phrases.filter(ph => ph.length >= 3 && ph.length <= 8);
+  L.hook = cands.length ? cands[hr() * cands.length | 0] : segs.slice(0, 6).map((_, i) => i);
+  L.cho = {}; let hw = 1, hi = 0;
+  [R[hr() * R.length | 0], end].forEach((rh, b) => rh.forEach((st, i) => {
+    hw = clamp(hw + moves[hr() * moves.length | 0], -1, 3);
+    if (b === 1 && i === rh.length - 1) hw = 0;
+    L.cho[b * 16 + st] = {len: (rh[i + 1] || 16) - st, off: hw, hi: hi++};
+  }));
 }
 /* Auto-tune: the notes of the beat's key that always sound good (a five-note scale), and the nearest one to a pitch. */
 function isMinor(S){ const tonic = S.prog.find(p => p[0] === 0); return !tonic || tonic[1][0] === 'm' || tonic[1] === '5'; }
@@ -917,14 +954,17 @@ function scheduleStep(n, t){
   /* singers take turns, one bar each */
   const singers = layers.filter(L => L.mode === 'sing' && !L.muted);
   const lead = singers.length ? singers[bar8 % singers.length] : null;
-  const e = lead && lead.ev[bar * 16 + ps];
+  const inCho = !!lead && lead.chorus && bar8 % 8 >= 4;       // four bars of verse, then four of chorus
+  const e = lead && (inCho ? lead.cho[(bar8 % 2) * 16 + ps] : lead.ev[bar * 16 + ps]);
   if (e){
-    const si = lead.next++ % lead.take.segs.length;       // next syllable; wraps only after the last one
+    const si = inCho ? lead.hook[e.hi % lead.hook.length]     // chorus: the hook phrase, the same every time
+                     : lead.next++ % lead.take.segs.length;   // verse: next syllable; wraps only after the last one
+    const fill = lead.hold === false ? 0 : e.len * sd * .92;   // hold each syllable for the length of its note
     const lad = ladder(root, type, lead.take.center + fxOf(lead).pitch);
     const ix = clamp(lad.mid + e.off, 0, lad.notes.length - 1), midi = lad.notes[ix], dur = e.len * sd;
     choke(lead, t);
-    playBuf(lead, tuned(lead.take, si, midi), t, 1, 1, dur);
-    if (lead.harmony && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, si, lad.notes[ix + 1]), t, 1, .55, dur);
+    playBuf(lead, tuned(lead.take, si, midi, undefined, null, fill), t, 1, fill ? .85 : 1, dur);
+    if ((lead.harmony || inCho) && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, si, lad.notes[ix + 1], undefined, null, fill), t, 1, .55, dur);   // the chorus always gets a harmony
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
     vis.push({t, id:lead.id}); mark('L' + lead.id, midi, e.len);
   }
@@ -1244,6 +1284,7 @@ function addLayer(buf, mode, kind){
     rhythm: buf.duration > stepDur() * BAR ? 0 : 1, voice: 0, fx: voiceFx(0), muted: false, harmony: false, echo: false,
     seed: Math.random() * 1e9 | 0, look: colorIx++, cur: []};
   arrange(L);
+  L.chorus = !!L.take && L.take.segs.length >= 8;            // enough words for a verse and a chorus
   layers.push(L); selId = L.id;
   drawLayers();
   const singers = layers.filter(l => l.mode === 'sing').length;
@@ -1356,7 +1397,7 @@ function drawPanel(){
   });
   $('#singopts').hidden = L.mode !== 'sing' && L.mode !== 'chop'; $('#loopopts').hidden = L.mode !== 'loop';
   $('#newtune').textContent = L.mode === 'chop' ? '🎲 New chop' : '🎲 New tune';
-  $('#harmony').hidden = L.mode !== 'sing';
+  ['#harmony', '#chorus', '#hold'].forEach(id => { $(id).hidden = L.mode !== 'sing'; });
   $('#voiceopts').hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);
   $('#instopts').hidden = L.mode !== 'inst' && L.mode !== 'band';
   $('#tuneopts').hidden = L.mode !== 'tune';
@@ -1365,7 +1406,7 @@ function drawPanel(){
   chipRow($('#rhythms'), RHYTHMS, i => i === L.rhythm, i => { L.rhythm = i; drawPanel(); });
   chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; L.fx = voiceFx(i); restart(L); drawPanel(); });   // new voice, default tweaks
   drawTweaks(L);
-  [['#harmony', L.harmony], ['#echo', L.echo]].forEach(([id, v]) => { $(id).classList.toggle('on', v); $(id).setAttribute('aria-pressed', v); });
+  [['#harmony', L.harmony], ['#echo', L.echo], ['#chorus', !!L.chorus], ['#hold', L.hold !== false]].forEach(([id, v]) => { $(id).classList.toggle('on', v); $(id).setAttribute('aria-pressed', v); });
   $('#mute').textContent = L.muted ? '⏰ Wake up' : '😴 Sleep';
 }
 function drawTweaks(L){
@@ -1422,6 +1463,8 @@ document.querySelectorAll('[data-silly]').forEach(b => b.onclick = async () => {
 $('#newtune').onclick = () => { const L = sel(); if (!L) return; L.seed = Math.random() * 1e9 | 0; arrange(L); say(L.mode === 'chop' ? 'New chop!' : 'New tune!'); if (!playing) start(); };
 $('#tweakreset').onclick = () => { const L = sel(); if (!L) return; L.fx = voiceFx(L.voice); restart(L); drawPanel(); };
 $('#harmony').onclick = () => { const L = sel(); if (!L) return; L.harmony = !L.harmony; drawPanel(); };
+$('#chorus').onclick = () => { const L = sel(); if (!L) return; L.chorus = !L.chorus; drawPanel(); say(L.chorus ? 'Chorus on: a short phrase from your words repeats as the hook. New tune picks a different one.' : 'Chorus off.'); };
+$('#hold').onclick = () => { const L = sel(); if (!L) return; L.hold = L.hold === false; drawPanel(); };
 $('#echo').onclick = () => { const L = sel(); if (!L) return; L.echo = !L.echo; drawPanel(); };
 $('#mute').onclick = () => {
   const L = sel(); if (!L) return;
@@ -1501,7 +1544,7 @@ async function writeSong(asNew){
     entry.name = name; entry.style = style.name; entry.at = new Date().toISOString();
     await dbSet('song:' + entry.id, {v:1, style:style.name, variant:styleVar, tempo, parts:Object.assign({}, parts), keySound, sig:sigIx, oct:octIx, phase:phaseIx,
       layers: layers.map(L => ({sr:L.buf.sampleRate, data:L.buf.getChannelData(0).slice(), mode:L.mode, rhythm:L.rhythm,
-        voice:L.voice, fx:Object.assign({}, fxOf(L)), harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0, tstyle:L.tstyle || 0}))});
+        voice:L.voice, fx:Object.assign({}, fxOf(L)), harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0, tstyle:L.tstyle || 0, chorus:!!L.chorus, hold:L.hold !== false}))});
     await dbSet('index', ix);
     curId = entry.id; curName = name;
     say('Saved "' + name + '" on this device.');
@@ -1517,7 +1560,7 @@ async function loadSong(id){
       const buf = ctx.createBuffer(1, o.data.length, o.sr); buf.getChannelData(0).set(o.data);
       const kind = o.kind || 'voice';
       const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice, fx:Object.assign(voiceFx(o.voice), o.fx || {}),
-        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, inst:o.inst || 0, tstyle:o.tstyle || 0, cur:[]};
+        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, inst:o.inst || 0, tstyle:o.tstyle || 0, chorus:!!o.chorus, hold:o.hold !== false, cur:[]};
       arrange(L); return L;
     });
     colorIx = layers.reduce((m, L) => Math.max(m, L.look + 1), 0); selId = null;
