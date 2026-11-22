@@ -256,7 +256,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.14.1';   // bump this with each release
+const VERSION = '1.15.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -414,7 +414,7 @@ const EYES = [2,1,3,2];
 const MAX_LAYERS = 6;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-let ctx, beatBus, sampleBus, duck, noiseBuf, echoIn, echoDelay, hallIn;
+let ctx, beatBus, sampleBus, duck, gate, noiseBuf, echoIn, echoDelay, hallIn;
 const driveCurve = Float32Array.from({length:256}, (_, i) => Math.tanh(4 * (i / 127.5 - 1))), revCache = new WeakMap();
 let styleBase = STYLES[0], styleVar = 0, style = STYLES[0], tempo = style.bpm, keySound = 0, playing = false, step = 0, nextT = 0, timer = null, vis = [];
 const parts = {}; PARTS.forEach(p => parts[p.id] = p.on);
@@ -451,7 +451,7 @@ function analyse(x, sr){
     const o = j * hop; let e = 0;
     for (let i = 0; i < win; i++) e += y[o + i] * y[o + i];
     rms[j] = Math.sqrt(e / win);
-    if (rms[j] < .02 || o + win + maxL + 2 > dn) continue;
+    if (rms[j] < .006 || o + win + maxL + 2 > dn) continue;
     for (let L = minL - 1; L <= maxL + 1; L++){
       let ac = 0, m = 0;
       for (let i = 0; i < win; i++){ const a = y[o + i], b = y[o + i + L]; ac += a * b; m += a * a + b * b; }
@@ -573,6 +573,7 @@ function tuned(T, si, midi, kind, from){
   if (!b){
     const d = tuneData(T, si, midi, kind, from);
     b = ctx.createBuffer(1, Math.max(1, d.length), T.sr); b.getChannelData(0).set(d);
+    if (T.cache.size > Math.max(300, T.segs.length * 8)) T.cache.clear();   // keep memory in check on phones
     T.cache.set(key, b);
   }
   return b;
@@ -661,9 +662,11 @@ function ladder(root, type, center){
 function initAudio(){
   if (ctx) return;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
+  ctx.onstatechange = () => { if (ctx.state !== 'running' && playing) ctx.resume().catch(() => {}); };
   const comp = ctx.createDynamicsCompressor();
   comp.threshold.value = -12; comp.ratio.value = 6; comp.connect(ctx.destination);
-  duck = ctx.createGain(); duck.connect(comp);
+  gate = ctx.createGain(); gate.connect(comp);              // closed by Stop so nothing rings on
+  duck = ctx.createGain(); duck.connect(gate);
   beatBus = ctx.createGain(); beatBus.gain.value = $('#vol').value / 100; beatBus.connect(duck);
   phaseWet = ctx.createGain(); phaseWet.gain.value = PHASES[phaseIx].wet; phaseWet.connect(duck);   // phaser: a swept copy of the band mixed back in
   phaseLfo = ctx.createOscillator(); phaseLfo.frequency.value = PHASES[phaseIx].hz;
@@ -738,6 +741,8 @@ function tone(t, midi, dur, wave, peak, cutoff, attack, out){
 function scheduleStep(n, t){
   const S = style, s = n % BAR, ps = MAP[s], bar8 = Math.floor(n / BAR), bar = bar8 % 4, sd = stepDur();
   const on = p => p && p[ps] !== '.';
+  if (s === 0) layers.forEach(L => { if (L.b0 == null && !L.muted) L.b0 = n; });
+  const W = BAR * 32, pos = L => ((n - L.b0) % W + W) % W;
   const own = layers.some(L => L.mode === 'band' && !L.muted && L.take);   // a Band monster brings its own band
   const ownBeat = layers.some(L => L.mode === 'beat' && !L.muted && L.take);   // a Beat monster is the drummer
   if (parts.drums && !own && !ownBeat){
@@ -794,10 +799,10 @@ function scheduleStep(n, t){
   /* as recorded, or auto-tuned: the whole take in its own timing, repeating every 1, 2, 4 or 8 bars, whichever it fits in.
      Auto-tune keeps each syllable where it was spoken but pulls its pitch onto the nearest note of the beat's key. */
   if (s === 0) layers.forEach(L => {
-    if ((L.mode !== 'plain' && L.mode !== 'tune') || L.muted) return;
+    if ((L.mode !== 'plain' && L.mode !== 'tune') || L.muted || L.b0 == null) return;
     const V = VOICES[L.voice], rate = L.mode === 'plain' ? V.rate : 1;
     const need = L.buf.duration / rate / (sd * BAR), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
-    if (bar8 % bars) return;
+    if (pos(L) % (bars * BAR)) return;
     choke(L, t);
     if (L.mode === 'plain'){ playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); return; }
     /* Auto-tune styles. Classic: flat on the nearest of five safe notes. Natural: gentler, seven notes, keeps the
@@ -844,7 +849,7 @@ function scheduleStep(n, t){
   });
   layers.forEach(L => {
     if (L.muted || L.mode !== 'band' || !L.take) return;
-    const key = S.name + '|' + tempo + '|' + sigIx;
+    const key = S.name + styleVar + '|' + tempo + '|' + sigIx;
     if (L.bkey !== key){ L.bkey = key; L.band = buildBand(L, S, sd); }
     const I = INSTS[L.inst || 0]; let lead = false;
     L.band.ev[n % L.band.period].forEach(e => {
@@ -870,11 +875,11 @@ function scheduleStep(n, t){
   /* recorded music, resampled: played faster or slower so it lasts a whole number of bars (or beats) and loops in time.
      Chop up plays it as half-beat slices, following the monster's chop pattern. */
   layers.forEach(L => {
-    if (L.muted || (L.mode !== 'fit' && L.mode !== 'chop')) return;
+    if (L.muted || (L.mode !== 'fit' && L.mode !== 'chop') || L.b0 == null) return;
     const len = L.buf.duration;
     let period = BAR, best = 99;                            // loop length in steps: a part of a bar, or 1 to 8 bars
     [.25,.5,1,2,4,8].forEach(b => { const st = b * BAR, d = Math.abs(Math.log(len / (st * sd))); if (st % 2 === 0 && d < best){ best = d; period = st; } });
-    const rate = len / (period * sd), at = n % period;
+    const rate = len / (period * sd), at = pos(L) % period;
     if (L.mode === 'fit'){
       if (at === 0){ choke(L, t); playBuf(L, L.buf, t, rate, 1); }
       if (s % BEAT === 0) vis.push({t, id:L.id});
@@ -886,6 +891,8 @@ function scheduleStep(n, t){
   if (s % BEAT === 0) vis.push({t, beat: s / BEAT});
 }
 
+/* Whole-take loops count from the bar the monster started on (b0), so they begin at the next bar, not up to 16 bars later. */
+function restart(L){ L.b0 = null; if (ctx) choke(L, ctx.currentTime); }
 function choke(L, t){
   L.cur.forEach(c => { try { c.g.gain.setTargetAtTime(0, t, .008); c.src.stop(t + .06); } catch(e){} });
   L.cur = [];
@@ -927,6 +934,7 @@ function playBuf(L, buf, t, rate, vol, dur, off){
 }
 
 function tick(){
+  if (nextT < ctx.currentTime - .25) nextT = ctx.currentTime + .05;   // fell behind (tab was in the background): skip, don't catch up
   while (nextT < ctx.currentTime + .14){
     const sd = stepDur(), s = MAP[step % BAR]; let off = 0;
     if (style.sw && BEAT === 4){ if (style.sw8){ if (s % 4 === 2) off = style.sw * sd * 2; } else if (s % 2 === 1) off = style.sw * sd; }
@@ -938,20 +946,22 @@ async function start(){
   await wake();
   if (playing) return;
   playing = true; step = 0; nextT = ctx.currentTime + .08; vis = [];
-  layers.forEach(L => { L.next = 0; });
+  gate.gain.cancelScheduledValues(ctx.currentTime); gate.gain.setTargetAtTime(1, ctx.currentTime, .01);
+  layers.forEach(L => { L.next = 0; L.b0 = null; });
   timer = setInterval(tick, 25); tick(); drawTransport();
 }
 function stop(){
   if (!playing) return;
   playing = false; clearInterval(timer); vis = [];
   layers.forEach(L => choke(L, ctx.currentTime));
+  gate.gain.setTargetAtTime(0, ctx.currentTime, .04);
   drawTransport();
 }
 
 /* ---------- recording ---------- */
 function say(msg){ $('#status').textContent = msg; }
 
-let holding = false, recStart = 0;
+let holding = false, recStart = 0, heldMs = 0;
 const HOLD_MSG = 'Keep holding the button while you talk, then let go.';
 async function beginRec(){
   holding = true;
@@ -989,13 +999,14 @@ function endRec(){ holding = false; stopRec(); }
 function stopRec(){
   clearTimeout(recTimer);
   if (recState !== 'recording') return;
-  recState = 'working'; drawRec();
+  recState = 'working'; drawRec(); heldMs = performance.now() - recStart;
   setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, 250);   // catch the tail of the last word
 }
 async function recDone(){
   stream.getTracks().forEach(tr => tr.stop()); stream = null;   // mic off between takes
+  ctx.resume().catch(() => {});
   duck.gain.setTargetAtTime(1, ctx.currentTime, .05);
-  if (performance.now() - recStart < 350){ chunks = []; recState = 'idle'; drawRec(); say(HOLD_MSG); return; }
+  if (heldMs < 350){ chunks = []; recState = 'idle'; drawRec(); say(HOLD_MSG); return; }
   try {
     const ab = await new Blob(chunks, {type: rec.mimeType}).arrayBuffer();
     const raw = await new Promise((res, rej) => ctx.decodeAudioData(ab, res, rej));
@@ -1111,7 +1122,7 @@ function drawKinds(){
 }
 function setSig(i){
   sigIx = i; MAP = SIGS[i].map; BAR = MAP.length; BEAT = SIGS[i].div;
-  step = 0; layers.forEach(L => { L.next = 0; if (ctx) choke(L, ctx.currentTime); });   // start again from beat one
+  step = 0; layers.forEach(L => { L.next = 0; restart(L); });   // start again from beat one
   if (ctx) nextT = Math.max(nextT, ctx.currentTime + .05);
   $('#dots').innerHTML = '<i class="dot"></i>'.repeat(BAR / BEAT);
   if (echoDelay) echoDelay.delayTime.value = Math.min(1, stepDur() * 3);
@@ -1150,7 +1161,7 @@ function drawPanel(){
   p.hidden = !L; if (!L) return;
   const modes = L.kind === 'music' ? MODES_MUSIC : MODES;
   chipRow($('#modes'), modes, i => modes[i].id === L.mode, i => {
-    L.mode = modes[i].id; if (ctx) choke(L, ctx.currentTime); drawPanel();
+    L.mode = modes[i].id; restart(L); drawPanel();
     if (L.mode === 'band') say('This monster plays your tune with its own band, so the usual band takes a rest.');
     if (L.mode === 'beat') say('This monster is the drummer now, so the usual drums take a rest.');
   });
@@ -1160,10 +1171,10 @@ function drawPanel(){
   $('#voiceopts').hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);
   $('#instopts').hidden = L.mode !== 'inst' && L.mode !== 'band';
   $('#tuneopts').hidden = L.mode !== 'tune';
-  chipRow($('#tunes'), TUNES, i => i === (L.tstyle || 0), i => { L.tstyle = i; if (ctx) choke(L, ctx.currentTime); drawPanel(); });
+  chipRow($('#tunes'), TUNES, i => i === (L.tstyle || 0), i => { L.tstyle = i; restart(L); drawPanel(); });
   chipRow($('#insts'), INSTS, i => i === (L.inst || 0), i => { L.inst = i; drawPanel(); });
   chipRow($('#rhythms'), RHYTHMS, i => i === L.rhythm, i => { L.rhythm = i; drawPanel(); });
-  chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; drawPanel(); });
+  chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; restart(L); drawPanel(); });
   [['#harmony', L.harmony], ['#echo', L.echo]].forEach(([id, v]) => { $(id).classList.toggle('on', v); $(id).setAttribute('aria-pressed', v); });
   $('#mute').textContent = L.muted ? '⏰ Wake up' : '😴 Sleep';
 }
@@ -1201,7 +1212,7 @@ $('#harmony').onclick = () => { const L = sel(); if (!L) return; L.harmony = !L.
 $('#echo').onclick = () => { const L = sel(); if (!L) return; L.echo = !L.echo; drawPanel(); };
 $('#mute').onclick = () => {
   const L = sel(); if (!L) return;
-  L.muted = !L.muted; if (L.muted && ctx) choke(L, ctx.currentTime); drawLayers();
+  L.muted = !L.muted; restart(L); drawLayers();
 };
 $('#remove').onclick = () => {
   const L = sel(); if (!L) return;
