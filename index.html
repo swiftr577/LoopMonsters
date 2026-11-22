@@ -41,7 +41,7 @@ h2{font-size:18px;font-weight:800;margin:0}
   padding:44px 10px 16px;min-height:150px;display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer}
 #viewbtn{position:absolute;top:8px;right:10px;padding:3px 10px;font-size:12px;min-height:30px;box-shadow:0 2px 0 var(--line);border-width:2px}
 #seq{width:100%;display:block;cursor:default}
-#blobs{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+#blobs{display:flex;flex-wrap:wrap;gap:24px 12px;justify-content:center;padding-top:12px}
 #hint{margin:0;text-align:center;font-weight:700;max-width:26ch}
 
 .blob{width:64px;height:64px;border:3px solid var(--line);padding:0;position:relative;
@@ -53,7 +53,29 @@ h2{font-size:18px;font-weight:800;margin:0}
 .eye::after{content:"";position:absolute;width:6px;height:6px;border-radius:50%;background:var(--face);left:3px;top:4px}
 .blob.muted .eye{height:4px;background:var(--face);border-radius:2px}
 .blob.muted .eye::after{display:none}
-.mouth{width:20px;height:6px;background:var(--face);border-radius:0 0 12px 12px}
+.eye.big{width:20px;height:20px} .eye.big::after{width:8px;height:8px;left:4px;top:5px}
+.eye.small{width:11px;height:11px} .eye.small::after{width:5px;height:5px;left:1px;top:2px}
+.gl .eye::after{transform:translateX(-2px)} .gr .eye::after{transform:translateX(2px)}
+.mouth{width:20px;height:6px;background:var(--face);border-radius:0 0 12px 12px;position:relative;transform-origin:top}
+.mouth.o{width:12px;height:12px;border-radius:50%}
+.mouth.teeth{width:24px;height:10px;border-radius:3px;border:2px solid var(--face);background:repeating-linear-gradient(90deg,#fff 0 5px,var(--face) 5px 6px)}
+.mouth.tongue{width:22px;height:10px;overflow:hidden}
+.mouth.tongue::after{content:"";position:absolute;left:6px;bottom:-3px;width:10px;height:8px;border-radius:50%;background:#FF6B81}
+.mouth.flat{width:18px;height:3px;border-radius:2px}
+.mouth.fang{width:22px;height:7px}
+.mouth.fang::before,.mouth.fang::after{content:"";position:absolute;top:0;border-left:3px solid transparent;border-right:3px solid transparent;border-top:6px solid #fff}
+.mouth.fang::before{left:3px} .mouth.fang::after{right:3px}
+.blob.cheeks::before,.blob.cheeks::after{content:"";position:absolute;bottom:14px;width:9px;height:6px;border-radius:50%;background:rgba(255,70,120,.5)}
+.blob.cheeks::before{left:4px} .blob.cheeks::after{right:4px}
+.top{position:absolute;left:0;right:0;top:-14px;height:14px;display:flex;justify-content:space-between;align-items:flex-end;padding:0 9px;pointer-events:none}
+.top i{display:block}
+.top.horns i{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:13px solid var(--line)}
+.top.ears i{width:15px;height:15px;border-radius:50%;background:var(--c);border:3px solid var(--line);margin-bottom:-6px}
+.top.antenna,.top.tuft{justify-content:center;gap:2px}
+.top.antenna i{width:3px;height:12px;background:var(--line);position:relative}
+.top.antenna i::before{content:"";position:absolute;left:-5px;top:-9px;width:9px;height:9px;border-radius:50%;background:var(--c);border:2px solid var(--line)}
+.top.tuft i{width:4px;height:12px;background:var(--line);border-radius:3px;transform-origin:bottom}
+.top.tuft i:first-child{transform:rotate(-28deg)} .top.tuft i:last-child{transform:rotate(28deg)}
 
 .panel{background:var(--card);border:3px solid var(--line);border-radius:20px;box-shadow:0 4px 0 var(--line);
   padding:12px;margin-top:14px}
@@ -64,6 +86,8 @@ h2{font-size:18px;font-weight:800;margin:0}
 .band summary::after{content:"+";font-size:24px;line-height:1}
 .band[open] summary::after{content:"\2212"}
 .band[open] summary{margin-bottom:12px}
+.band summary .now{margin-left:auto;margin-right:10px;font-size:14px;color:var(--muted);font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}
+.band summary .dots{margin-left:12px}
 
 .recwrap{text-align:center;margin:20px 0 6px}
 #rec{width:128px;height:128px;border-radius:50%;border:4px solid var(--line);background:var(--rec);color:#fff;
@@ -134,7 +158,15 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
   </section>
 
   <section class="panel" id="panel" hidden aria-label="Change this monster">
-    <p>What it does</p>
+    <div class="chips" style="margin-bottom:0">
+      <button class="btn small" id="echo" aria-pressed="false">🏔️ Echo</button>
+      <button class="btn small" id="mute">😴 Sleep</button>
+      <button class="btn small" id="remove">Remove</button>
+    </div>
+  </section>
+
+  <details class="panel band" id="whatbox" open hidden>
+    <summary><span>What it does</span><span class="now" id="whatnow"></span></summary>
     <div class="chips" id="modes"></div>
     <div id="singopts">
       <div class="chips">
@@ -156,16 +188,12 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       <p>Tune instrument</p>
       <div class="chips" id="insts"></div>
     </div>
-    <div id="voiceopts">
-      <p>Voice</p>
-      <div class="chips" id="voices"></div>
-    </div>
-    <div class="chips" style="margin-bottom:0">
-      <button class="btn small" id="echo" aria-pressed="false">🏔️ Echo</button>
-      <button class="btn small" id="mute">😴 Sleep</button>
-      <button class="btn small" id="remove">Remove</button>
-    </div>
-  </section>
+  </details>
+
+  <details class="panel band" id="voicebox" hidden>
+    <summary><span>Voice</span><span class="now" id="voicenow"></span></summary>
+    <div class="chips" id="voices" style="margin-bottom:0"></div>
+  </details>
 
   <details class="panel band" id="tweaks" hidden>
     <summary>Voice tweaks</summary>
@@ -183,25 +211,29 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       <span id="reclabel">Hold to record</span>
     </button>
     <p id="status" aria-live="polite"></p>
-    <div class="silly">
-      <span>Or add a silly sound</span>
-      <button class="btn small" data-silly="boing">Boing</button>
-      <button class="btn small" data-silly="zap">Zap</button>
-      <button class="btn small" data-silly="pop">Pop</button>
-    </div>
   </div>
 
-  <section class="beats">
-    <div class="beathead">
-      <h2>Pick a beat</h2>
-      <div class="dots" id="dots" aria-hidden="true"></div>
+  <details class="panel band" id="noisebox">
+    <summary><span>Silly noises</span></summary>
+    <div class="chips" style="margin-bottom:0">
+      <button class="btn small" data-silly="boing">🦘 Boing</button>
+      <button class="btn small" data-silly="zap">⚡ Zap</button>
+      <button class="btn small" data-silly="pop">🫧 Pop</button>
+      <button class="btn small" data-silly="fart">💨 Fart</button>
+      <button class="btn small" data-silly="whistle">🎈 Whistle</button>
+      <button class="btn small" data-silly="honk">📯 Honk</button>
+      <button class="btn small" data-silly="quack">🦆 Quack</button>
     </div>
+  </details>
+
+  <details class="panel band" id="beatbox" open>
+    <summary><span>Pick a beat</span><span class="dots" id="dots" aria-hidden="true"></span><span class="now" id="beatnow"></span></summary>
     <div id="beatgrid"></div>
     <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
       <b id="vartitle" style="font-size:14px"></b>
       <div class="chips" id="vars" style="margin:0"></div>
     </div>
-  </section>
+  </details>
 
   <details class="panel band">
     <summary>Band settings</summary>
@@ -270,7 +302,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.21.0';   // bump this with each release
+const VERSION = '1.23.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -338,7 +370,16 @@ const STYLES = [
   bass:'0.....7.c.....7.',ch:'X...............',cw:'square',cv:.05,prog:[[0,'M'],[5,'M'],[0,'M'],[7,'M']]},
  {name:'Electro Pop',icon:'🌈',bpm:124,key:45,k:'x...x...x...x...',c:'....x.......x...',h:'..x...x...x...x.',
   bass:'0.0c0.0c0.0c0.0c',bw:'sawtooth',bc:1200,ch:'X...............',cw:'sawtooth',cv:.05,arp:'0.2.3.2.1.2.3.2.',av:.05,
-  prog:[[0,'m'],[10,'M'],[8,'M'],[10,'M']]}
+  prog:[[0,'m'],[10,'M'],[8,'M'],[10,'M']]},
+ {name:'Lullaby',icon:'🌙',bpm:66,key:36,bass:'0.......7.......',bv:.3,ch:'X...............',cv:.08,cc:1200,
+  arp:'0.1.2.3.2.1.2.1.',aw:'sine',av:.14,prog:[[0,'M'],[9,'m'],[5,'M'],[7,'M']]},
+ {name:'Circus',icon:'🎪',bpm:132,key:36,k:'x.......x.......',s:'....x.......x...',
+  bass:'0...7...0...7...',ch:'..x...x...x...x.',cw:'square',cv:.06,arp:'0.2.3.2.1.2.3.2.',av:.05,prog:[[0,'M'],[7,'7'],[7,'7'],[0,'M']]},
+ {name:'Pirate',icon:'🏴‍☠️',bpm:108,sw:.3,sw8:true,key:38,k:'x.....x.x.....x.',s:'....x.......x...',c:'....x.......x...',p:'..x...x...x...x.',
+  bass:'0.....7.0.....7.',ch:'x...x.x.x...x.x.',cw:'square',cv:.05,prog:[[0,'m'],[10,'M'],[8,'M'],[7,'m']]},
+ {name:'Space',icon:'🚀',bpm:84,key:45,k:'x.........x.....',s:'........x.......',h:'x...x...x...x...',
+  bass:'0...............',ch:'X...............',cw:'sawtooth',cv:.05,cc:1200,arp:'0..2..1..3..2..1',aw:'sine',av:.12,
+  prog:[[0,'m7'],[8,'M7'],[3,'M7'],[10,'M']]}
 ];
 /* Versions 2 and 3 of each beat: only the parts that differ from version 1. */
 const VARS = {
@@ -425,7 +466,19 @@ const VARS = {
   {k:'x.....x...x.....',c:'....x..x....x...',h:'x.x.x.x.x.x.x.x.',bass:'0.....a...c.....',ch:'..x...x...x...x.',prog:[[0,'7'],[5,'7'],[0,'7'],[7,'7']]}],
  'Electro Pop':[
   {k:'x.....x.x.....x.',h:'xxxxxxxxxxxxxxxx',bass:'0..0..0.0..0..7.',ch:'x..x..x..x..x.x.',cv:.06,arp:'',prog:[[0,'m'],[3,'M'],[8,'M'],[10,'M']]},
-  {h:'',o:'..x...x...x...x.',bass:'..0...0...0..0.0',ch:'',arp:'0123012332103210',prog:[[0,'m'],[5,'m'],[8,'M'],[7,'m']]}]
+  {h:'',o:'..x...x...x...x.',bass:'..0...0...0..0.0',ch:'',arp:'0123012332103210',prog:[[0,'m'],[5,'m'],[8,'M'],[7,'m']]}],
+ 'Lullaby':[
+  {bass:'0...............',ch:'x.......x.......',arp:'0...2...1...3...',prog:[[0,'M'],[5,'M'],[0,'M'],[7,'M']]},
+  {h:'........x.......',bass:'0.......0.......',arp:'0.2.1.2.0.2.1.2.',prog:[[0,'M7'],[9,'m7'],[2,'m7'],[7,'7']]}],
+ 'Circus':[
+  {k:'x...x...x...x...',s:'',c:'....x.......x...',arp:'0123210123210123',prog:[[0,'M'],[5,'M'],[7,'7'],[0,'M']]},
+  {arp:'0.1.2.1.0.1.2.1.',prog:[[0,'m'],[7,'7'],[0,'m'],[7,'7']]}],
+ 'Pirate':[
+  {k:'x...x...x...x...',bass:'0...0...7...7...',ch:'X...............',arp:'0.2.1.2.3.2.1.2.',aw:'triangle',av:.08,prog:[[0,'m'],[0,'m'],[10,'M'],[0,'m']]},
+  {k:'x.......x.......',s:'',p:'',h:'x.x.x.x.x.x.x.x.',bass:'0.......7.....7.',ch:'..x...x...x...x.',prog:[[0,'m'],[8,'M'],[3,'M'],[10,'M']]}],
+ 'Space':[
+  {k:'',s:'',h:'',bass:'0.......7.......',arp:'0.1.2.3.2.1.0.1.',prog:[[0,'m7'],[5,'m7'],[8,'M7'],[10,'M']]},
+  {k:'x...x...x...x...',s:'',c:'....x.......x...',h:'..x...x...x...x.',bass:'0.0.0.0.0.0.0.0.',bw:'sawtooth',arp:'0123012301230123',aw:'square',av:.04,prog:[[0,'m'],[8,'M'],[3,'M'],[10,'M']]}]
 };
 /*END*/
 const CHORDS = {M:[0,4,7], m:[0,3,7], '7':[0,4,7,10], m7:[0,3,7,10], M7:[0,4,7,11], '5':[0,7,12]};
@@ -486,9 +539,22 @@ const PARTS = [
   {id:'twinkle',name:'Twinkles',icon:'✨',on:false}
 ];
 const KEYS = [{name:'Auto',id:'auto'},{name:'Piano',id:'triangle'},{name:'Synth',id:'sawtooth'},{name:'Organ',id:'square'}];
-const COLORS = ['#FF6B6B','#FFC93C','#2EC4B6','#9C84FF','#FF8FD8','#5BC0FF','#8BD450','#FF9F43'];
-const SHAPES = ['50%','38% 62% 55% 45%','22px','60% 40% 40% 60%','50% 50% 30% 30%','30% 70% 50% 50%'];
-const EYES = [2,1,3,2];
+/* Monster looks. Each monster is put together at random: colour, body shape, eyes, mouth, something on its head.
+   Colours are dealt from a shuffled pack, so the monsters in one session all differ and each session looks new. */
+const COLORS = ['#FF6B6B','#FFC93C','#2EC4B6','#9C84FF','#FF8FD8','#5BC0FF','#8BD450','#FF9F43','#F25CA2','#4FD1A5','#FFB3A7','#B5E655'];
+const SHAPES = ['50%','38% 62% 55% 45%','22px','60% 40% 40% 60%','50% 50% 30% 30%','30% 70% 50% 50%','45% 45% 20% 20%','14px 30px 14px 30px','50% 50% 50% 50% / 62% 62% 38% 38%','26px 26px 50% 50%'];
+const pick = a => a[Math.random() * a.length | 0];
+let pack = [];
+function shufflePack(){ pack = COLORS.slice(); for (let i = pack.length - 1; i > 0; i--){ const j = Math.random() * (i + 1) | 0; [pack[i], pack[j]] = [pack[j], pack[i]]; } }
+function newLook(){
+  if (!pack.length) shufflePack();
+  const eyes = pick([1,2,2,2,2,3]);
+  return {color: pack.pop(), shape: pick(SHAPES), eyes, size: eyes === 1 ? 'big' : eyes === 3 ? pick(['', 'small']) : pick(['', '', 'big', 'small']),
+    gaze: pick(['', '', 'gl', 'gr']), mouth: pick(['smile', 'smile', 'o', 'teeth', 'tongue', 'flat', 'fang']),
+    top: pick(['', '', 'horns', 'ears', 'antenna', 'tuft']), cheeks: Math.random() < .35};
+}
+/* Songs saved before version 1.23 stored a number; turn it back into the monster it used to be. */
+const oldLook = n => ({color: COLORS[n % 8], shape: SHAPES[n % 6], eyes: [2,1,3,2][n % 4], size:'', gaze:'', mouth:'smile', top:'', cheeks:false});
 const MAX_LAYERS = 6;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -496,7 +562,7 @@ let ctx, beatBus, sampleBus, duck, gate, noiseBuf, echoIn, echoDelay, hallIn;
 const curves = new Map(), revCache = new WeakMap();
 let styleBase = STYLES[0], styleVar = 0, style = STYLES[0], tempo = style.bpm, keySound = 0, playing = false, step = 0, nextT = 0, timer = null, vis = [];
 const parts = {}; PARTS.forEach(p => parts[p.id] = p.on);
-let layers = [], selId = null, uid = 0, colorIx = 0;
+let layers = [], selId = null, uid = 0;
 let recKind = 0, takeKind = 'voice';
 let recState = 'idle', stream = null, rec = null, chunks = [], recTimer = null;
 
@@ -872,7 +938,7 @@ function drawSeq(){
   const css = getComputedStyle(document.documentElement), ink = css.getPropertyValue('--ink').trim() || '#1F1A3D';
   const lanes = BAND_LANES.map((k, i) => ({key:k, label:k, h: i < 4 ? 12 : 24, lo: i === 4 ? 30 : 52, hi: i === 4 ? 62 : 92, color:ink}))
     .concat(layers.map((L, i) => ({key:'L' + L.id, id:L.id, label:(i + 1) + ' ' + ((L.kind === 'music' ? MODES_MUSIC : MODES).find(m => m.id === L.mode) || {name:''}).name,
-      h:26, lo:36, hi:96, color:COLORS[L.look % COLORS.length], muted:L.muted})));
+      h:26, lo:36, hi:96, color:L.look.color, muted:L.muted})));
   const H = lanes.reduce((s, l) => s + l.h + 3, 14);
   if (cv.width !== Math.round(wide * dpr) || cv.height !== Math.round(H * dpr)){ cv.width = Math.round(wide * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + 'px'; }
   const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, wide, H);
@@ -1123,26 +1189,70 @@ function playBuf(L, buf, t, rate, vol, dur, off){
   L.cur.push({src, g});
 }
 
+/* Background play. Browsers slow a hidden page's timers to about once a second, so while hidden the music is
+   scheduled 3 seconds ahead. The timer runs in a worker where possible, because worker timers are slowed less. */
 function tick(){
-  if (nextT < ctx.currentTime - .25) nextT = ctx.currentTime + .05;   // fell behind (tab was in the background): skip, don't catch up
-  while (nextT < ctx.currentTime + .14){
+  if (nextT < ctx.currentTime - .25) nextT = ctx.currentTime + .05;   // fell behind: skip, don't catch up
+  while (nextT < ctx.currentTime + (document.hidden ? 3 : .14)){
     const sd = stepDur(), s = MAP[step % BAR]; let off = 0;
     if (style.sw && BEAT === 4){ if (style.sw8){ if (s % 4 === 2) off = style.sw * sd * 2; } else if (s % 2 === 1) off = style.sw * sd; }
     scheduleStep(step, nextT + off); G++;
     nextT += sd; step = (step + 1) % (BAR * 32);
   }
 }
+let ticker = null;
+function startTicker(){
+  stopTicker();
+  try {
+    if (!ticker){
+      ticker = new Worker(URL.createObjectURL(new Blob(['let t=null;onmessage=e=>{clearInterval(t);t=null;if(e.data)t=setInterval(()=>postMessage(0),25)}'], {type:'text/javascript'})));
+      ticker.onmessage = () => { if (playing) tick(); };
+    }
+    ticker.postMessage(1);
+  } catch(e){ ticker = null; }
+  timer = setInterval(tick, ticker ? 500 : 25);              // the plain timer is the fallback (and a safety net)
+}
+function stopTicker(){ clearInterval(timer); if (ticker) ticker.postMessage(0); }
+/* iPhone and iPad stop a page's sound when it goes to the background unless it looks like a media player. So while
+   playing: ask for media playback mode (if the mic isn't in use), loop a silent clip in an ordinary audio element as a
+   keep-alive, and give the lock screen a title and play/pause buttons. */
+let silent = null;
+function keepAlive(on){
+  try {
+    if (on){
+      if (!warm && recState === 'idle') soundMode('playback');
+      if (!silent){
+        const n = 8000, wav = new Uint8Array(44 + n), dv = new DataView(wav.buffer);       // one second of 8-bit silence
+        [[0,0x52494646],[8,0x57415645],[12,0x666d7420],[36,0x64617461]].forEach(([o, v]) => dv.setUint32(o, v));
+        dv.setUint32(4, 36 + n, true); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+        dv.setUint32(24, 8000, true); dv.setUint32(28, 8000, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true); dv.setUint32(40, n, true);
+        wav.fill(128, 44);
+        silent = new Audio(URL.createObjectURL(new Blob([wav], {type:'audio/wav'}))); silent.loop = true;
+      }
+      const pr = silent.play(); if (pr) pr.catch(() => {});
+      if (navigator.mediaSession){
+        navigator.mediaSession.metadata = new MediaMetadata({title:'Loop Monsters', artist: styleBase.name + ' ' + (styleVar + 1)});
+        navigator.mediaSession.setActionHandler('pause', stop); navigator.mediaSession.setActionHandler('play', start);
+        navigator.mediaSession.playbackState = 'playing';
+      }
+    } else {
+      if (silent) silent.pause();
+      if (navigator.mediaSession) navigator.mediaSession.playbackState = 'paused';
+    }
+  } catch(e){}
+}
+document.addEventListener('visibilitychange', () => { if (ctx && playing){ ctx.resume().catch(() => {}); tick(); } });
 async function start(){
   await wake();
   if (playing) return;
   playing = true; step = 0; G = 0; seq.clear(); nextT = ctx.currentTime + .08; vis = [];
   gate.gain.cancelScheduledValues(ctx.currentTime); gate.gain.setTargetAtTime(1, ctx.currentTime, .01);
   layers.forEach(L => { L.next = 0; L.b0 = null; });
-  timer = setInterval(tick, 25); tick(); drawTransport();
+  startTicker(); tick(); keepAlive(true); drawTransport();
 }
 function stop(){
   if (!playing) return;
-  playing = false; clearInterval(timer); vis = [];
+  playing = false; stopTicker(); keepAlive(false); vis = [];
   layers.forEach(L => choke(L, ctx.currentTime));
   gate.gain.setTargetAtTime(0, ctx.currentTime, .04);
   drawTransport();
@@ -1171,7 +1281,7 @@ async function micOn(){
     try { const st = warm.getAudioTracks()[0].getSettings(); diag.mic = 'kept ready, echoCancel ' + st.echoCancellation + ', rate ' + st.sampleRate; } catch(e){}
     ctx.resume().catch(() => {});
     say('Mic is on and ready, so recording starts the moment you press. Switch it off when you are done.');
-  } catch(e){ warm = null; soundMode('playback'); say('The microphone is blocked here. Allow the mic, or try a silly sound below.'); }
+  } catch(e){ warm = null; soundMode('playback'); say('The microphone is blocked here. Allow the mic, or open Silly noises below.'); }
   drawMic();
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) micOff(); });   // never leave the mic on in the background
@@ -1205,7 +1315,7 @@ async function beginRec(){
   } catch(e){
     if (!warm) soundMode('playback');
     recState = 'idle'; drawRec();
-    say('The microphone is blocked here. Allow the mic, or try a silly sound below.');
+    say('The microphone is blocked here. Allow the mic, or open Silly noises below.');
     return;
   }
   if (!holding){            // finger came off while the mic was starting (or to answer the permission question)
@@ -1265,15 +1375,26 @@ function trim(raw){
   return out;
 }
 function sillyBuf(kind){
-  const sr = ctx.sampleRate, dur = {boing:.55, zap:.3, pop:.12}[kind], n = Math.floor(sr * dur);
-  const b = ctx.createBuffer(1, n, sr), d = b.getChannelData(0); let ph = 0;
+  const sr = ctx.sampleRate, dur = {boing:.55, zap:.3, pop:.12, fart:.7, whistle:.75, honk:.6, quack:.22}[kind], n = Math.floor(sr * dur);
+  const b = ctx.createBuffer(1, n, sr), d = b.getChannelData(0), TAU = 2 * Math.PI;
+  let ph = 0, lp = 0, y1 = 0, y2 = 0;
   for (let i = 0; i < n; i++){
-    const t = i / sr, x = t / dur; let f, amp;
-    if (kind === 'boing'){ f = 170 + 130 * Math.sin(2 * Math.PI * 8 * t) * Math.exp(-3 * t) + 90 * t; amp = Math.exp(-4 * t); }
+    const t = i / sr, x = t / dur; let f, amp, v;
+    if (kind === 'boing'){ f = 170 + 130 * Math.sin(TAU * 8 * t) * Math.exp(-3 * t) + 90 * t; amp = Math.exp(-4 * t); }
     else if (kind === 'zap'){ f = 2400 * Math.pow(.06, x); amp = 1 - x; }
-    else { f = 300 + 900 * x; amp = Math.sin(Math.PI * x); }
-    ph += 2 * Math.PI * f / sr;
-    d[i] = Math.sin(ph) * amp * .8 * Math.min(1, (n - i) / 200);
+    else if (kind === 'pop'){ f = 300 + 900 * x; amp = Math.sin(Math.PI * x); }
+    else if (kind === 'fart'){ f = 98 - 38 * x + 10 * Math.sin(TAU * 19 * t) + 6 * Math.sin(TAU * 43 * t); amp = Math.min(1, x * 30) * (1 - x * x) * (.75 + .25 * Math.sin(TAU * 27 * t)); }
+    else if (kind === 'whistle'){ f = 500 + 1000 * Math.sin(Math.PI * x) + 12 * Math.sin(TAU * 6 * t); amp = Math.sqrt(Math.sin(Math.PI * x)); }
+    else if (kind === 'honk'){ f = x < .34 ? 330 : 262; amp = x < .3 ? Math.min(1, x * 40, (.3 - x) * 40) : x < .38 ? 0 : Math.min(1, (x - .38) * 40, (1 - x) * 12); }
+    else { f = 390 - 150 * x; amp = Math.pow(Math.sin(Math.PI * x), .6); }
+    ph += TAU * f / sr;
+    const frac = (ph / TAU) % 1;
+    if (kind === 'fart'){ lp += ((frac < .18 ? 1 : -.22) - lp) * .12; v = lp; }                 // flappy pulses, dulled
+    else if (kind === 'honk') v = Math.tanh(3 * Math.sin(ph)) * .5;                                   // reedy, like a bulb horn
+    else if (kind === 'quack'){                                                                       // buzzy with a nasal ring
+      const c = 2 * .96 * Math.cos(TAU * 1300 / sr), y = (2 * frac - 1) * .017 + c * y1 - .9216 * y2; y2 = y1; y1 = y; v = y;
+    } else v = Math.sin(ph);
+    d[i] = v * amp * .8 * Math.min(1, (n - i) / 200);
   }
   return b;
 }
@@ -1282,7 +1403,7 @@ function addLayer(buf, mode, kind){
   if (layers.length >= MAX_LAYERS){ say('The stage is full. Remove a monster to make room.'); return; }
   const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), buf.sampleRate), mode,
     rhythm: buf.duration > stepDur() * BAR ? 0 : 1, voice: 0, fx: voiceFx(0), muted: false, harmony: false, echo: false,
-    seed: Math.random() * 1e9 | 0, look: colorIx++, cur: []};
+    seed: Math.random() * 1e9 | 0, look: newLook(), cur: []};
   arrange(L);
   L.chorus = !!L.take && L.take.segs.length >= 8;            // enough words for a verse and a chorus
   layers.push(L); selId = L.id;
@@ -1330,6 +1451,7 @@ function drawBeats(){
     grid.appendChild(b);
   });
   $('#vartitle').textContent = styleBase.name + ' version';
+  $('#beatnow').textContent = styleBase.name + ' ' + (styleVar + 1);
   chipRow($('#vars'), [{name:'1'},{name:'2'},{name:'3'}], i => i === styleVar, i => { pickStyle(styleBase, i); drawBeats(); start(); });
 }
 function chipRow(el, items, isOn, pick){
@@ -1375,11 +1497,14 @@ function drawLayers(){
     const b = document.createElement('button');
     b.className = 'blob' + (L.id === selId ? ' sel' : '') + (L.muted ? ' muted' : '');
     b.id = 'blob' + L.id;
-    b.style.background = COLORS[L.look % COLORS.length];
-    b.style.borderRadius = SHAPES[L.look % SHAPES.length];
+    const K = L.look;
+    if (K.cheeks) b.className += ' cheeks';
+    b.style.background = K.color; b.style.setProperty('--c', K.color);
+    b.style.borderRadius = K.shape;
     b.setAttribute('aria-label', 'Monster ' + (i + 1) + (L.muted ? ', asleep' : ''));
     b.setAttribute('aria-pressed', L.id === selId);
-    b.innerHTML = '<span class="eyes">' + '<i class="eye"></i>'.repeat(EYES[L.look % EYES.length]) + '</span><i class="mouth"></i>';
+    b.innerHTML = (K.top ? '<span class="top ' + K.top + '">' + '<i></i>'.repeat(K.top === 'antenna' ? 1 : K.top === 'tuft' ? 3 : 2) + '</span>' : '') +
+      '<span class="eyes ' + K.gaze + '">' + ('<i class="eye ' + K.size + '"></i>').repeat(K.eyes) + '</span><i class="mouth ' + K.mouth + '"></i>';
     b.onclick = () => { selId = selId === L.id ? null : L.id; drawLayers(); };
     wrap.appendChild(b);
   });
@@ -1388,7 +1513,8 @@ function drawLayers(){
 const sel = () => layers.find(l => l.id === selId);
 function drawPanel(){
   const L = sel(), p = $('#panel');
-  p.hidden = !L; if (!L){ $('#tweaks').hidden = true; return; }
+  p.hidden = !L; $('#whatbox').hidden = !L;
+  if (!L){ $('#tweaks').hidden = true; $('#voicebox').hidden = true; return; }
   const modes = L.kind === 'music' ? MODES_MUSIC : MODES;
   chipRow($('#modes'), modes, i => modes[i].id === L.mode, i => {
     L.mode = modes[i].id; restart(L); drawPanel();
@@ -1398,7 +1524,8 @@ function drawPanel(){
   $('#singopts').hidden = L.mode !== 'sing' && L.mode !== 'chop'; $('#loopopts').hidden = L.mode !== 'loop';
   $('#newtune').textContent = L.mode === 'chop' ? '🎲 New chop' : '🎲 New tune';
   ['#harmony', '#chorus', '#hold'].forEach(id => { $(id).hidden = L.mode !== 'sing'; });
-  $('#voiceopts').hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);
+  $('#voicebox').hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);
+  $('#whatnow').textContent = (modes.find(m => m.id === L.mode) || {name:''}).name; $('#voicenow').textContent = (VOICES[L.voice] || VOICES[0]).name;
   $('#instopts').hidden = L.mode !== 'inst' && L.mode !== 'band';
   $('#tuneopts').hidden = L.mode !== 'tune';
   chipRow($('#tunes'), TUNES, i => i === (L.tstyle || 0), i => { L.tstyle = i; restart(L); drawPanel(); });
@@ -1425,7 +1552,7 @@ function drawTweaks(L){
 function sing(id){
   const el = document.getElementById('blob' + id); if (!el || !el.animate) return;
   if (!reduceMotion) el.animate([{transform:'scale(1)'},{transform:'scale(1.2) rotate(-5deg)'},{transform:'scale(1)'}], {duration:200, easing:'ease-out'});
-  el.querySelector('.mouth').animate([{height:'6px'},{height:'18px'},{height:'6px'}], {duration:200, easing:'ease-out'});
+  el.querySelector('.mouth').animate([{transform:'scale(1)'},{transform:'scale(1.15,2.2)'},{transform:'scale(1)'}], {duration:200, easing:'ease-out'});
 }
 function frame(){
   if (ctx && playing){
@@ -1484,7 +1611,7 @@ $('#clear').onclick = e => {
   }
   clearTimeout(clearArmed); clearArmed = null; e.target.textContent = 'Start over';
   if (ctx) layers.forEach(L => choke(L, ctx.currentTime));
-  layers = []; selId = null; curId = null; curName = ''; drawLayers(); say('');
+  layers = []; selId = null; curId = null; curName = ''; shufflePack(); drawLayers(); say('');   // new session, new monsters
 };
 
 /* ---------- saving (this device only, after a grown-up agrees) ---------- */
@@ -1560,10 +1687,10 @@ async function loadSong(id){
       const buf = ctx.createBuffer(1, o.data.length, o.sr); buf.getChannelData(0).set(o.data);
       const kind = o.kind || 'voice';
       const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice, fx:Object.assign(voiceFx(o.voice), o.fx || {}),
-        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, inst:o.inst || 0, tstyle:o.tstyle || 0, chorus:!!o.chorus, hold:o.hold !== false, cur:[]};
+        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look: typeof o.look === 'number' ? oldLook(o.look) : o.look, inst:o.inst || 0, tstyle:o.tstyle || 0, chorus:!!o.chorus, hold:o.hold !== false, cur:[]};
       arrange(L); return L;
     });
-    colorIx = layers.reduce((m, L) => Math.max(m, L.look + 1), 0); selId = null;
+    shufflePack(); pack = pack.filter(c => !layers.some(L => L.look.color === c)); selId = null;
     pickStyle(STYLES.find(x => x.name === s.style) || STYLES[0], s.variant || 0); setTempo(s.tempo);
     Object.assign(parts, s.parts); keySound = s.keySound || 0;
     setSig(s.sig || 0); octIx = s.oct == null ? 1 : s.oct; setPhase(s.phase || 0);
