@@ -256,7 +256,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.14.0';   // bump this with each release
+const VERSION = '1.14.1';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -687,7 +687,15 @@ function initAudio(){
   const d = noiseBuf.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
 }
-async function wake(){ initAudio(); if (ctx.state !== 'running') await ctx.resume(); }
+/* Phones only let sound start from a finished tap (not from the start of a press), and until then resume() never
+   answers. So never wait on it for long, and retry on every tap anywhere on the page. */
+async function wake(){
+  initAudio();
+  if (ctx.state !== 'running') await Promise.race([ctx.resume().catch(() => {}), new Promise(r => setTimeout(r, 400))]);
+}
+['pointerup', 'touchend', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, () => {
+  initAudio(); if (ctx.state !== 'running') ctx.resume().catch(() => {});
+}, true));
 
 function decay(g, t, peak, dur){ g.gain.setValueAtTime(peak, t); g.gain.exponentialRampToValueAtTime(.001, t + dur); }
 function noise(t, dur, type, freq, peak, q){
@@ -951,13 +959,13 @@ async function beginRec(){
   if (layers.length >= MAX_LAYERS){ say('The stage is full. Remove a monster to make room.'); return; }
   recState = 'asking'; drawRec();
   try {
-    await wake();
+    initAudio(); ctx.resume().catch(() => {});      // don't wait: the press hasn't finished, so the phone may not answer yet
     if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('unsupported');
     takeKind = KINDS[recKind].id;
     stream = await navigator.mediaDevices.getUserMedia({audio: takeKind === 'music'
       ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false}   // phone call clean-up mangles music
       : {echoCancellation:true}});
-    if (ctx.state !== 'running') await ctx.resume();
+    ctx.resume().catch(() => {});
   } catch(e){
     recState = 'idle'; drawRec();
     say('The microphone is blocked here. Allow the mic, or try a silly sound below.');
