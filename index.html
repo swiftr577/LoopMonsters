@@ -246,7 +246,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.11.0';   // bump this with each release
+const VERSION = '1.12.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -445,7 +445,7 @@ function analyse(x, sr){
   for (let j = 0; j < nf; j++) f0[j] = median(raw.subarray(Math.max(0, j - 2), Math.min(nf, j + 3)));
 
   let peak = 0; for (let j = 0; j < nf; j++) if (rms[j] > peak) peak = rms[j];
-  const thr = Math.max(.02, peak * .15), runs = [];
+  const thr = Math.max(.012, peak * .08), runs = [];
   let s = -1, gap = 0;
   for (let j = 0; j <= nf; j++){
     if (j < nf && rms[j] > thr){ if (s < 0) s = j; gap = 0; }
@@ -453,14 +453,14 @@ function analyse(x, sr){
   }
   const pieces = [];
   const split = (a, b) => {
-    if (b - a <= 40){ if (b - a >= 5) pieces.push([a, b]); return; }
+    if (b - a <= 40){ if (b - a >= 4) pieces.push([a, b]); return; }
     let m = a + 12, best = Infinity;
     for (let j = a + 12; j < b - 12; j++){ const v = rms[j - 1] + rms[j] + rms[j + 1]; if (v < best){ best = v; m = j; } }
     split(a, m); split(m, b);
   };
   runs.forEach(r => split(r[0], r[1]));
   const hopS = hop * D, offS = win * D / 2, voiced = Array.from(f0).filter(f => f > 0), all = median(voiced);
-  let segs = pieces.slice(0, 64).map(p => ({
+  let segs = pieces.slice(0, 200).map(p => ({
     a: Math.max(0, Math.floor(p[0] * hopS - .005 * sr)),
     b: Math.min(x.length, Math.floor(p[1] * hopS + offS + .02 * sr)),
     med: median(Array.from(f0.subarray(p[0], p[1])).filter(f => f > 0))
@@ -530,7 +530,7 @@ function drumKind(T, a, b){
    they sound; spoken or sung syllables become a hi-hat if they start with a hiss, otherwise a snare when the voice
    goes up and a kick when it stays low. */
 function buildBeat(L, sd){
-  const T = L.take, need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8) * 16;
+  const T = L.take, need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * 16;
   const ev = Array.from({length:period}, () => null), mid = 440 * Math.pow(2, (T.center - 69) / 12);
   T.segs.forEach(g => {
     const q = Math.round(g.a / T.sr / sd) % period, end = Math.min(g.b, g.a + Math.floor(T.sr * .07));
@@ -568,7 +568,8 @@ function arrange(L){
     });
   }
   L.ev = {}; let si = 0;
-  for (let rep = 0; rep < 2; rep++) mel.forEach(m => { L.ev[rep * 64 + m.st] = {len:m.len, off:m.off, si: si++ % L.take.segs.length}; });
+  mel.forEach(m => { L.ev[m.st] = {len:m.len, off:m.off}; });
+  L.next = 0;
 }
 /* Auto-tune: the notes of the beat's key that always sound good (a five-note scale), and the nearest one to a pitch. */
 function isMinor(S){ const tonic = S.prog.find(p => p[0] === 0); return !tonic || tonic[1][0] === 'm' || tonic[1] === '5'; }
@@ -580,7 +581,7 @@ function keyScale(S){ return (isMinor(S) ? [0,3,5,7,10] : [0,2,4,7,9]).map(x => 
    If the take has plenty of beatboxing, those hits are the drum track instead. */
 function buildBand(L, S, sd){
   const pcs = keyScale(S), notes = transcribe(L.take, pcs);
-  const need = L.buf.duration / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8, period = bars * 16;
+  const need = L.buf.duration / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16, period = bars * 16;
   const ev = Array.from({length:period}, () => []), w = Array.from({length:bars}, () => new Float32Array(12)), ons = new Set();
   let drums = 0;
   notes.forEach(o => {
@@ -727,13 +728,14 @@ function scheduleStep(n, t){
   /* singers take turns, one bar each */
   const singers = layers.filter(L => L.mode === 'sing' && !L.muted);
   const lead = singers.length ? singers[bar8 % singers.length] : null;
-  const e = lead && lead.ev[n];
+  const e = lead && lead.ev[n % 64];
   if (e){
+    const si = lead.next++ % lead.take.segs.length;       // next syllable; wraps only after the last one
     const lad = ladder(root, type, lead.take.center), V = VOICES[lead.voice];
     const ix = clamp(lad.mid + e.off, 0, lad.notes.length - 1), midi = lad.notes[ix], dur = e.len * sd;
     choke(lead, t);
-    playBuf(lead, tuned(lead.take, e.si, midi + V.shift), t, 1, 1, dur);
-    if (lead.harmony && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, e.si, lad.notes[ix + 1] + V.shift), t, 1, .55, dur);
+    playBuf(lead, tuned(lead.take, si, midi + V.shift), t, 1, 1, dur);
+    if (lead.harmony && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, si, lad.notes[ix + 1] + V.shift), t, 1, .55, dur);
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
     vis.push({t, id:lead.id});
   }
@@ -747,7 +749,7 @@ function scheduleStep(n, t){
   if (s === 0) layers.forEach(L => {
     if ((L.mode !== 'plain' && L.mode !== 'tune') || L.muted) return;
     const V = VOICES[L.voice], rate = L.mode === 'plain' ? V.rate : 1;
-    const need = L.buf.duration / rate / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8;
+    const need = L.buf.duration / rate / (sd * 16), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
     if (bar8 % bars) return;
     choke(L, t);
     if (L.mode === 'plain'){ playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); return; }
@@ -762,7 +764,7 @@ function scheduleStep(n, t){
     if (L.muted || L.mode !== 'inst' || !L.take) return;
     const pcs = keyScale(S), key = pcs.join();
     if (L.nkey !== key){ L.nkey = key; L.notes = transcribe(L.take, pcs); }
-    const need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : 8) * 16, I = INSTS[L.inst || 0];
+    const need = L.buf.duration / (sd * 16), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * 16, I = INSTS[L.inst || 0];
     L.notes.forEach(o => {
       if (Math.round(o.at / sd) % period !== n % period) return;
       if (o.drum){ if (o.drum === 'k') kick(t); else if (o.drum === 's') snare(t); else hat(t, 1); }
@@ -863,13 +865,14 @@ function tick(){
     const sd = stepDur(), s = step % 16; let off = 0;
     if (style.sw){ if (style.sw8){ if (s % 4 === 2) off = style.sw * sd * 2; } else if (s % 2 === 1) off = style.sw * sd; }
     scheduleStep(step, nextT + off);
-    nextT += sd; step = (step + 1) % 128;
+    nextT += sd; step = (step + 1) % 512;
   }
 }
 async function start(){
   await wake();
   if (playing) return;
   playing = true; step = 0; nextT = ctx.currentTime + .08; vis = [];
+  layers.forEach(L => { L.next = 0; });
   timer = setInterval(tick, 25); tick(); drawTransport();
 }
 function stop(){
@@ -921,7 +924,7 @@ function stopRec(){
   clearTimeout(recTimer);
   if (recState !== 'recording') return;
   recState = 'working'; drawRec();
-  if (rec.state !== 'inactive') rec.stop();
+  setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, 250);   // catch the tail of the last word
 }
 async function recDone(){
   stream.getTracks().forEach(tr => tr.stop()); stream = null;   // mic off between takes
@@ -941,10 +944,10 @@ function trim(raw){
   for (let c = 0; c < chs; c++){ const ch = raw.getChannelData(c); for (let i = 0; i < n; i++) d[i] += ch[i] / chs; }
   let peak = 0; for (let i = 0; i < n; i++){ const v = Math.abs(d[i]); if (v > peak) peak = v; }
   if (peak < .015) return null;
-  const thr = Math.max(.012, peak * .12);
+  const thr = Math.max(.008, peak * .04);
   let a = 0; while (a < n && Math.abs(d[a]) < thr) a++;
   let b = n - 1; while (b > a && Math.abs(d[b]) < thr) b--;
-  a = Math.max(0, a - Math.floor(sr * .015)); b = Math.min(n - 1, b + Math.floor(sr * .09));
+  a = Math.max(0, a - Math.floor(sr * .04)); b = Math.min(n - 1, b + Math.floor(sr * .2));
   const len = b - a; if (len < sr * .04) return null;
   const out = ctx.createBuffer(1, len, sr), o = out.getChannelData(0), gain = Math.min(.9 / peak, 10);
   const fi = Math.floor(sr * .004), fo = Math.floor(sr * .03);
