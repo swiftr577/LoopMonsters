@@ -142,6 +142,10 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       <p>How often it plays</p>
       <div class="chips" id="rhythms"></div>
     </div>
+    <div id="tuneopts">
+      <p>Auto-tune style</p>
+      <div class="chips" id="tunes"></div>
+    </div>
     <div id="instopts">
       <p>Tune instrument</p>
       <div class="chips" id="insts"></div>
@@ -252,7 +256,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.13.0';   // bump this with each release
+const VERSION = '1.14.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -393,6 +397,10 @@ const INSTS = [
   {name:'Piano',icon:'🎹',wave:'triangle',vol:.3,cut:3000,att:.005},{name:'Synth',icon:'🎛️',wave:'sawtooth',vol:.15,cut:2500,att:.01},
   {name:'Flute',icon:'🪈',wave:'sine',vol:.34,cut:5000,att:.04},{name:'Game',icon:'👾',wave:'square',vol:.12,cut:3500,att:.005}
 ];
+const TUNES = [
+  {name:'Classic',icon:'🎤',id:'hard'},{name:'Natural',icon:'🌿',id:'nat'},{name:'Slide',icon:'🎢',id:'glide'},
+  {name:'Follow chords',icon:'🎹',id:'chord'},{name:'One note',icon:'📏',id:'one'},{name:'Choir',icon:'👯',id:'choir'}
+];
 const PARTS = [
   {id:'drums',name:'Drums',icon:'🥁',on:true},{id:'bass',name:'Bass',icon:'🎸',on:true},
   {id:'chords',name:'Keyboard',icon:'🎹',on:true},{id:'tune',name:'Tune helper',icon:'🎼',on:true},
@@ -487,7 +495,7 @@ function analyse(x, sr){
   return {data:x, sr, f0, rms, thr, hopS, offS, segs, center: all ? 69 + 12 * Math.log2(all / 440) : 60, cache:new Map()};
 }
 /* Hard-tune one piece to a note: read it faster or slower, moment by moment, so its pitch stays flat on the target. */
-function tuneData(T, si, midi){
+function tuneData(T, si, midi, kind, from){
   const seg = T.segs[si], x = T.data, n = seg.b - seg.a, sr = T.sr;
   let out;
   if (!seg.med) out = x.slice(seg.a, seg.b);
@@ -497,8 +505,9 @@ function tuneData(T, si, midi){
     while (pos < seg.b - 1 && k < tmp.length){
       let f = T.f0[clamp(Math.round((pos - T.offS) / T.hopS), 0, last)];
       if (!f || f > seg.med * 1.5 || f < seg.med / 1.5) f = seg.med;
-      const r = clamp(target / f, .35, 3);
-      rs = rs ? rs + (r - rs) * .003 : r;
+      const r = clamp(target / (kind === 'nat' ? seg.med : f), .35, 3);   // natural: one shift for the whole syllable
+      if (!rs) rs = kind === 'glide' && from ? clamp(mtof(from) / f, .35, 3) : r;   // slide: start on the previous note
+      else rs += (r - rs) * (kind === 'glide' ? .0005 : .003);
       const i = pos | 0;
       tmp[k++] = x[i] + (x[i + 1] - x[i]) * (pos - i);
       pos += rs;
@@ -559,10 +568,10 @@ function buildBeat(L, sd){
   return {period, ev};
 }
 /*ENDDSP*/
-function tuned(T, si, midi){
-  const key = si + '/' + midi; let b = T.cache.get(key);
+function tuned(T, si, midi, kind, from){
+  const key = si + '/' + midi + (kind ? '/' + kind + '/' + from : ''); let b = T.cache.get(key);
   if (!b){
-    const d = tuneData(T, si, midi);
+    const d = tuneData(T, si, midi, kind, from);
     b = ctx.createBuffer(1, Math.max(1, d.length), T.sr); b.getChannelData(0).set(d);
     T.cache.set(key, b);
   }
@@ -591,6 +600,7 @@ function arrange(L){
 }
 /* Auto-tune: the notes of the beat's key that always sound good (a five-note scale), and the nearest one to a pitch. */
 function isMinor(S){ const tonic = S.prog.find(p => p[0] === 0); return !tonic || tonic[1][0] === 'm' || tonic[1] === '5'; }
+function fullScale(S){ return (isMinor(S) ? [0,2,3,5,7,8,10] : [0,2,4,5,7,9,11]).map(x => (S.key + x) % 12); }
 function keyScale(S){ return (isMinor(S) ? [0,3,5,7,10] : [0,2,4,7,9]).map(x => (S.key + x) % 12); }
 /*BAND*/
 /* Band: work out a whole arrangement from one hummed tune. The tune is the lead. For each bar, pick the chord from the
@@ -782,10 +792,29 @@ function scheduleStep(n, t){
     if (bar8 % bars) return;
     choke(L, t);
     if (L.mode === 'plain'){ playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); return; }
-    const pcs = keyScale(S);
+    /* Auto-tune styles. Classic: flat on the nearest of five safe notes. Natural: gentler, seven notes, keeps the
+       voice's own rise and fall. Slide: glides from note to note. Follow chords: uses the notes of the chord playing
+       in that bar. One note: everything on the key note. Choir: Classic plus a voice above and a voice an octave below. */
+    const A = TUNES[L.tstyle || 0].id, five = keyScale(S), pcs = A === 'nat' ? fullScale(S) : five;
+    const kind = A === 'nat' || A === 'glide' ? A : undefined;
+    let prev = null;
     L.take.segs.forEach((g, i) => {
-      const at = t + g.a / L.take.sr, m = g.med ? snap(69 + 12 * Math.log2(g.med / 440), pcs) : 60;
-      playBuf(L, tuned(L.take, i, m + V.shift), at, 1, 1); vis.push({t:at, id:L.id});
+      const at = t + g.a / L.take.sr; let m = 60;
+      if (g.med){
+        const sung = 69 + 12 * Math.log2(g.med / 440);
+        if (A === 'one') m = snap(L.take.center, [S.key % 12]);
+        else if (A === 'chord'){
+          const c = S.prog[(bar + Math.floor(g.a / L.take.sr / (sd * BAR))) % 4];
+          m = snap(sung, CHORDS[c[1]].map(iv => (S.key + c[0] + iv) % 12));
+        } else m = snap(sung, pcs);
+      }
+      playBuf(L, tuned(L.take, i, m + V.shift, kind, A === 'glide' && prev != null ? prev + V.shift : null), at, 1, 1);
+      if (A === 'choir' && g.med){
+        playBuf(L, tuned(L.take, i, snap(m + 3.5, five) + V.shift), at, 1, .5);
+        playBuf(L, tuned(L.take, i, m - 12 + V.shift), at, 1, .5);
+      }
+      if (g.med) prev = m;
+      vis.push({t:at, id:L.id});
     });
   });
   /* instrument: the hummed tune played as notes (and beatbox noises as drums), snapped to the key and to the beat grid */
@@ -1122,6 +1151,8 @@ function drawPanel(){
   $('#harmony').hidden = L.mode !== 'sing';
   $('#voiceopts').hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);
   $('#instopts').hidden = L.mode !== 'inst' && L.mode !== 'band';
+  $('#tuneopts').hidden = L.mode !== 'tune';
+  chipRow($('#tunes'), TUNES, i => i === (L.tstyle || 0), i => { L.tstyle = i; if (ctx) choke(L, ctx.currentTime); drawPanel(); });
   chipRow($('#insts'), INSTS, i => i === (L.inst || 0), i => { L.inst = i; drawPanel(); });
   chipRow($('#rhythms'), RHYTHMS, i => i === L.rhythm, i => { L.rhythm = i; drawPanel(); });
   chipRow($('#voices'), VOICES, i => i === L.voice, i => { L.voice = i; drawPanel(); });
@@ -1238,7 +1269,7 @@ async function writeSong(asNew){
     entry.name = name; entry.style = style.name; entry.at = new Date().toISOString();
     await dbSet('song:' + entry.id, {v:1, style:style.name, variant:styleVar, tempo, parts:Object.assign({}, parts), keySound, sig:sigIx, oct:octIx, phase:phaseIx,
       layers: layers.map(L => ({sr:L.buf.sampleRate, data:L.buf.getChannelData(0).slice(), mode:L.mode, rhythm:L.rhythm,
-        voice:L.voice, harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0}))});
+        voice:L.voice, harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0, tstyle:L.tstyle || 0}))});
     await dbSet('index', ix);
     curId = entry.id; curName = name;
     say('Saved "' + name + '" on this device.');
@@ -1254,7 +1285,7 @@ async function loadSong(id){
       const buf = ctx.createBuffer(1, o.data.length, o.sr); buf.getChannelData(0).set(o.data);
       const kind = o.kind || 'voice';
       const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice,
-        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, inst:o.inst || 0, cur:[]};
+        harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look:o.look, inst:o.inst || 0, tstyle:o.tstyle || 0, cur:[]};
       arrange(L); return L;
     });
     colorIx = layers.reduce((m, L) => Math.max(m, L.look + 1), 0); selId = null;
