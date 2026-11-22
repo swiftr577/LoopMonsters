@@ -115,7 +115,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 .song b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .song small{color:var(--muted);font-weight:700}
 .btn:disabled{opacity:.45;box-shadow:0 4px 0 var(--line);transform:none}
-.ver{text-align:center;margin:18px 0 0;font-size:12px;font-weight:700;color:var(--muted);opacity:.7}
+.ver{text-align:center;margin:18px 0 0;font-size:12px;font-weight:700;color:var(--muted);opacity:.7;cursor:pointer;-webkit-user-select:text;user-select:text}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -260,7 +260,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.16.1';   // bump this with each release
+const VERSION = '1.16.2';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -669,7 +669,6 @@ function ladder(root, type, center){
 function soundMode(type){ try { if (navigator.audioSession) navigator.audioSession.type = type; } catch(e){} }
 function initAudio(){
   if (ctx) return;
-  soundMode('playback');
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   ctx.onstatechange = () => { if (ctx.state !== 'running' && playing) ctx.resume().catch(() => {}); };
   const comp = ctx.createDynamicsCompressor();
@@ -1030,6 +1029,12 @@ function stop(){
 function say(msg){ $('#status').textContent = msg; }
 
 let holding = false, recStart = 0, heldMs = 0;
+const diag = {mic:'not used yet', take:'none yet'};
+function showDiag(){
+  const el = $('#ver'); if (!el.dataset.open){ el.textContent = 'Version ' + VERSION; return; }
+  el.textContent = 'Version ' + VERSION + ' | sound: ' + (ctx ? ctx.state + ' at ' + ctx.sampleRate : 'not started') +
+    ' | mode: ' + (navigator.audioSession ? navigator.audioSession.type : 'not supported') + ' | mic: ' + diag.mic + ' | last take: ' + diag.take;
+}
 const HOLD_MSG = 'Keep holding the button while you talk, then let go.';
 async function beginRec(){
   holding = true;
@@ -1041,11 +1046,12 @@ async function beginRec(){
     if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('unsupported');
     takeKind = KINDS[recKind].id;
     soundMode('play-and-record');
-    /* Echo cancelling is off for voice too: it switches phones into call-quality sound that lingers after the take,
-       and the app is nearly silent while recording anyway. Music also skips the other call clean-up, which mangles it. */
+    /* Voice keeps echo cancelling on: with it off, iPhones record very quietly and play through the earpiece.
+       Music turns the call clean-up off because it mangles music, at the cost of a quieter take on iPhone. */
     stream = await navigator.mediaDevices.getUserMedia({audio: takeKind === 'music'
       ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false}
-      : {echoCancellation:false}});
+      : {echoCancellation:true}});
+    try { const st = stream.getAudioTracks()[0].getSettings(); diag.mic = 'echoCancel ' + st.echoCancellation + ', rate ' + st.sampleRate; } catch(e){}
     ctx.resume().catch(() => {});
   } catch(e){
     soundMode('playback');
@@ -1086,20 +1092,21 @@ async function recDone(){
     const buf = trim(raw);
     if (buf) addLayer(buf, takeKind === 'music' ? 'fit' : 'sing', takeKind); else say("Couldn't hear that one. Try again, a bit louder!");
   } catch(e){ say("That recording didn't work. Hold the button to try again."); }
-  chunks = []; recState = 'idle'; drawRec();
+  chunks = []; recState = 'idle'; drawRec(); showDiag();
 }
 /* Cut the silence off both ends, then even out the volume. */
 function trim(raw){
   const n = raw.length, sr = raw.sampleRate, chs = raw.numberOfChannels, d = new Float32Array(n);
   for (let c = 0; c < chs; c++){ const ch = raw.getChannelData(c); for (let i = 0; i < n; i++) d[i] += ch[i] / chs; }
   let peak = 0; for (let i = 0; i < n; i++){ const v = Math.abs(d[i]); if (v > peak) peak = v; }
-  if (peak < .015) return null;
-  const thr = Math.max(.008, peak * .04);
+  diag.take = 'peak ' + peak.toFixed(4) + ', ' + (n / sr).toFixed(1) + ' s at ' + sr;
+  if (peak < .004) return null;
+  const thr = Math.max(.002, peak * .04);
   let a = 0; while (a < n && Math.abs(d[a]) < thr) a++;
   let b = n - 1; while (b > a && Math.abs(d[b]) < thr) b--;
   a = Math.max(0, a - Math.floor(sr * .04)); b = Math.min(n - 1, b + Math.floor(sr * .2));
   const len = b - a; if (len < sr * .04) return null;
-  const out = ctx.createBuffer(1, len, sr), o = out.getChannelData(0), gain = Math.min(.9 / peak, 10);
+  const out = ctx.createBuffer(1, len, sr), o = out.getChannelData(0), gain = Math.min(.9 / peak, 40);
   const fi = Math.floor(sr * .004), fo = Math.floor(sr * .03);
   for (let i = 0; i < len; i++){
     let v = d[a + i] * gain;
@@ -1446,7 +1453,8 @@ twoTap($('#forget'), 'Delete all', 'Tap again to delete all', async () => {
   try { await dbClear(); curId = null; curName = ''; await drawSongs(); say('All saved songs and the agreement were deleted from this device.'); } catch(e){ say(NO_SAVE); }
 });
 
-$('#ver').textContent = 'Version ' + VERSION;
+$('#ver').onclick = e => { if (e.target.dataset.open) delete e.target.dataset.open; else e.target.dataset.open = '1'; showDiag(); };
+showDiag();
 setSig(0); setTempo(style.bpm); drawBeats(); drawKinds(); drawBand(); drawLayers(); drawRec(); frame();
 })();
 </script>
