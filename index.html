@@ -260,7 +260,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.16.0';   // bump this with each release
+const VERSION = '1.16.1';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -663,8 +663,13 @@ function ladder(root, type, center){
 }
 
 /* ---------- audio engine ---------- */
+/* iPhone and iPad: using the mic puts the device in "phone call" sound mode (quiet, thin, sometimes through the
+   earpiece) and it can stay there afterwards. Where the browser lets us (Safari 16.4+), say which mode we want:
+   call mode only while recording, normal playback the rest of the time. Playback mode also ignores the silent switch. */
+function soundMode(type){ try { if (navigator.audioSession) navigator.audioSession.type = type; } catch(e){} }
 function initAudio(){
   if (ctx) return;
+  soundMode('playback');
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   ctx.onstatechange = () => { if (ctx.state !== 'running' && playing) ctx.resume().catch(() => {}); };
   const comp = ctx.createDynamicsCompressor();
@@ -1035,24 +1040,28 @@ async function beginRec(){
     initAudio(); ctx.resume().catch(() => {});      // don't wait: the press hasn't finished, so the phone may not answer yet
     if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('unsupported');
     takeKind = KINDS[recKind].id;
+    soundMode('play-and-record');
+    /* Echo cancelling is off for voice too: it switches phones into call-quality sound that lingers after the take,
+       and the app is nearly silent while recording anyway. Music also skips the other call clean-up, which mangles it. */
     stream = await navigator.mediaDevices.getUserMedia({audio: takeKind === 'music'
-      ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false}   // phone call clean-up mangles music
-      : {echoCancellation:true}});
+      ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false}
+      : {echoCancellation:false}});
     ctx.resume().catch(() => {});
   } catch(e){
+    soundMode('playback');
     recState = 'idle'; drawRec();
     say('The microphone is blocked here. Allow the mic, or try a silly sound below.');
     return;
   }
   if (!holding){            // finger came off while the mic was starting (or to answer the permission question)
-    stream.getTracks().forEach(tr => tr.stop()); stream = null;
+    stream.getTracks().forEach(tr => tr.stop()); stream = null; soundMode('playback');
     recState = 'idle'; drawRec(); say(HOLD_MSG); return;
   }
   chunks = [];
   rec = new MediaRecorder(stream);
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = recDone;
-  duck.gain.setTargetAtTime(takeKind === 'music' ? 0 : .08, ctx.currentTime, .03);   // silent while sampling music
+  duck.gain.setTargetAtTime(takeKind === 'music' ? 0 : .03, ctx.currentTime, .03);   // silent while sampling music
   rec.start(); recStart = performance.now();
   recState = 'recording'; drawRec();
   say('Listening… let go when you are done!');
@@ -1067,6 +1076,7 @@ function stopRec(){
 }
 async function recDone(){
   stream.getTracks().forEach(tr => tr.stop()); stream = null;   // mic off between takes
+  soundMode('playback');
   ctx.resume().catch(() => {});
   duck.gain.setTargetAtTime(1, ctx.currentTime, .05);
   if (heldMs < 350){ chunks = []; recState = 'idle'; drawRec(); say(HOLD_MSG); return; }
