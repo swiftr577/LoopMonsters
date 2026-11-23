@@ -328,7 +328,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.24.0';   // bump this with each release
+const VERSION = '1.25.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -581,7 +581,9 @@ const TUNES = [
 ];
 const PARTS = [
   {id:'drums',name:'Drums',icon:'🥁',on:true},{id:'bass',name:'Bass',icon:'🎸',on:true},
-  {id:'chords',name:'Keyboard',icon:'🎹',on:true},{id:'tune',name:'Tune helper',icon:'🎼',on:true},
+  {id:'chords',name:'Keyboard',icon:'🎹',on:true},{id:'strings',name:'Strings',icon:'🎻',on:true},
+  {id:'guitar',name:'Guitar',icon:'🪕',on:true},{id:'riff',name:'Riff',icon:'🎺',on:true},
+  {id:'fills',name:'Drum fills',icon:'💥',on:true},{id:'tune',name:'Tune helper',icon:'🎼',on:true},
   {id:'clap',name:'Claps',icon:'👏',on:false},{id:'shaker',name:'Shaker',icon:'🪇',on:false},
   {id:'twinkle',name:'Twinkles',icon:'✨',on:false}
 ];
@@ -951,6 +953,28 @@ function snare(t){
 }
 function hat(t, v, open){ noise(t, open ? .26 : .045, 'highpass', 7500, .2 * v); }
 function clap(t){ noise(t, .02, 'bandpass', 1500, .45, 1.2); noise(t + .012, .02, 'bandpass', 1500, .45, 1.2); noise(t + .024, .16, 'bandpass', 1500, .45, 1.2); }
+function tom(t, f){
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * .55, t + .16);
+  decay(g, t, .6, .22); o.connect(g); g.connect(beatBus); o.start(t); o.stop(t + .24);
+}
+/* Riff: a short two-bar motif made up once per beat and version. It is stored as chord-note numbers, so it follows the
+   chords, and it only plays while no monster is singing, so it fills the gaps without getting in the way. */
+const riffs = new Map();
+function riffFor(S){
+  const key = S.name + styleVar; let r = riffs.get(key);
+  if (!r){
+    let hsh = 7; for (const c of key) hsh = (hsh * 31 + c.charCodeAt(0)) | 0;
+    const rnd = rng(hsh); r = [{}, {}]; let w = 1;
+    for (let b = 0; b < 2; b++){
+      let slots = [0,2,4,6,8,10,12,14].filter(() => rnd() < .6);
+      if (slots.length < 3) slots = [0, 6, 10];
+      slots.forEach((st, i) => { w = clamp(w + [-1,0,1,1,-1,2][rnd() * 6 | 0], 0, 3); r[b][st] = {i:w, len:(slots[i + 1] || 16) - st}; });
+    }
+    riffs.set(key, r);
+  }
+  return r;
+}
 function perc(t){
   const g = ctx.createGain(); decay(g, t, .2, .09); g.connect(beatBus);
   [587, 845].forEach(fr => { const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = fr; o.connect(g); o.start(t); o.stop(t + .1); });
@@ -971,7 +995,7 @@ function tone(t, midi, dur, wave, peak, cutoff, attack, out){
 /* Sequencer view. Everything the engine plays is noted in a four-bar grid: one row per band part and per monster.
    A cell remembers which pass of the loop it belongs to (due), so old notes are wiped as the playhead reaches them. */
 let seqOn = false, G = 0, seqRows = [];
-const seq = new Map(), BAND_LANES = ['Kick','Snare','Hats','Perc','Bass','Keys'], DRUM_Y = {k:40, s:64, h:90};
+const seq = new Map(), BAND_LANES = ['Kick','Snare','Hats','Perc','Bass','Keys','Strings','Guitar','Riff'], DRUM_Y = {k:40, s:64, h:90};
 function mark(key, midi, len, ahead){
   const WIN = BAR * 4, due = G + (ahead || 0);
   let row = seq.get(key);
@@ -983,7 +1007,7 @@ function mark(key, midi, len, ahead){
 function drawSeq(){
   const cv = $('#seq'), dpr = window.devicePixelRatio || 1, wide = cv.clientWidth, WIN = BAR * 4, X0 = 76;
   const css = getComputedStyle(document.documentElement), ink = css.getPropertyValue('--ink').trim() || '#1F1A3D';
-  const lanes = BAND_LANES.map((k, i) => ({key:k, label:k, h: i < 4 ? 12 : 24, lo: i === 4 ? 30 : 52, hi: i === 4 ? 62 : 92, color:ink}))
+  const lanes = BAND_LANES.map((k, i) => ({key:k, label:k, h: i < 4 ? 12 : i < 6 ? 24 : 18, lo: i === 4 ? 30 : 52, hi: i === 4 ? 62 : 92, color:ink}))
     .concat(layers.map((L, i) => ({key:'L' + L.id, id:L.id, label:(i + 1) + ' ' + ((L.kind === 'music' ? MODES_MUSIC : MODES).find(m => m.id === L.mode) || {name:''}).name,
       h:26, lo:36, hi:96, color:L.look.color, muted:L.muted})));
   const H = lanes.reduce((s, l) => s + l.h + 3, 14);
@@ -1041,6 +1065,11 @@ function scheduleStep(n, t){
   }
   if (parts.clap && ps % 8 === 4){ clap(t); mark('Perc'); }
   if (parts.shaker) noise(t, .03, 'highpass', 9000, s % 2 ? .07 : .13);
+  /* drum fills: a tom run down into every fourth bar's end, and a cymbal crash to start the next phrase */
+  if (parts.fills && parts.drums && !own && !ownBeat && S.k){
+    if (bar === 3 && ps >= 12 && ps !== 13){ tom(t, ps === 12 ? 210 : ps === 14 ? 160 : 120); mark('Perc'); }
+    if (bar === 0 && s === 0 && n){ noise(t, 1.1, 'highpass', 5000, .16); mark('Hats', 0, 4); }
+  }
 
   const root = S.key + S.prog[bar][0], type = S.prog[bar][1];
   const notes = CHORDS[type].map(iv => { let m = root + iv; while (m < 55) m += 12; while (m >= 67) m -= 12; return m; });
@@ -1062,6 +1091,16 @@ function scheduleStep(n, t){
       tone(t, m + 12, sd * 1.4, S.aw || 'square', S.av || .06, 3000); mark('Keys', m + 12, 1);
     }
   }
+  /* strings: the bar's chord held softly an octave up, two slightly detuned layers for width */
+  if (parts.strings && !own && s === 0) notes.forEach(m => {
+    tone(t, m + 12, sd * BAR * 1.02, 'sawtooth', .022, 1500, .25); tone(t, m + 12.08, sd * BAR * 1.02, 'sawtooth', .018, 1500, .25);
+    mark('Strings', m + 12, BAR);
+  });
+  /* guitar: picks through the chord notes on every half-beat, with a short plucked sound */
+  if (parts.guitar && !own && s % 2 === 0){
+    const m = notes[[0,1,2,1,0,2,1,2][(s >> 1) % 8] % notes.length];
+    tone(t, m, .2, 'sawtooth', .05, 3200, .002); mark('Guitar', m, 1);
+  }
   if (parts.twinkle && !own && s % 2 === 0) tone(t, notes[[0,2,1,2,0,1,2,1][(s >> 1) % 8] % notes.length] + 24, sd * 1.8, 'sine', .07, 6000);
 
   /* singers take turns, one bar each */
@@ -1080,6 +1119,10 @@ function scheduleStep(n, t){
     if ((lead.harmony || inCho) && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, si, lad.notes[ix + 1], undefined, null, fill), t, 1, .55, dur);   // the chorus always gets a harmony
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
     vis.push({t, id:lead.id}); mark('L' + lead.id, midi, e.len);
+  }
+  if (parts.riff && !own && !lead){
+    const r = riffFor(S)[bar % 2][ps];
+    if (r){ const m = (r.i < notes.length ? notes[r.i] : notes[0] + 12) + 12; tone(t, m, Math.min(r.len, 4) * sd * .9, 'square', .035, 2600, .01); mark('Riff', m, Math.min(r.len, 4)); }
   }
   layers.forEach(L => {
     if (L.mode === 'loop' && !L.muted && RHYTHMS[L.rhythm].fn(ps, bar)){
