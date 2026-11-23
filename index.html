@@ -328,7 +328,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.25.0';   // bump this with each release
+const VERSION = '1.26.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -652,7 +652,7 @@ function analyse(x, sr){
     }
     let gmax = 0;
     for (let L = minL; L <= maxL; L++) if (nsdf[L] > nsdf[L - 1] && nsdf[L] >= nsdf[L + 1] && nsdf[L] > gmax) gmax = nsdf[L];
-    if (gmax < .5) continue;
+    if (gmax < .6) continue;
     for (let L = minL; L <= maxL; L++){
       if (nsdf[L] > nsdf[L - 1] && nsdf[L] >= nsdf[L + 1] && nsdf[L] >= .9 * gmax){
         const a = nsdf[L - 1], b = nsdf[L], c = nsdf[L + 1], den = a - 2 * b + c;
@@ -662,6 +662,10 @@ function analyse(x, sr){
   }
   const f0 = new Float32Array(nf);
   for (let j = 0; j < nf; j++) f0[j] = median(raw.subarray(Math.max(0, j - 2), Math.min(nf, j + 3)));
+  /* Hissy sounds (s, sh, t) can fool the tracker into reporting a wildly high or low pitch. A speaking voice stays
+     within about an octave of its usual pitch, so anything further out is treated as "no pitch". */
+  const usual = median(Array.from(f0).filter(f => f > 0));
+  if (usual) for (let j = 0; j < nf; j++) if (f0[j] > usual * 2.1 || f0[j] < usual / 2.1) f0[j] = 0;
 
   let peak = 0; for (let j = 0; j < nf; j++) if (rms[j] > peak) peak = rms[j];
   const thr = Math.max(.012, peak * .08), runs = [];
@@ -670,54 +674,106 @@ function analyse(x, sr){
     if (j < nf && rms[j] > thr){ if (s < 0) s = j; gap = 0; }
     else if (s >= 0){ gap++; if (gap > 4 || j === nf){ runs.push([s, j - gap + 1]); s = -1; gap = 0; } }
   }
-  const pieces = [];
-  const split = (a, b) => {
-    if (b - a <= 40){ if (b - a >= 4) pieces.push([a, b]); return; }
-    let m = a + 12, best = Infinity;
-    for (let j = a + 12; j < b - 12; j++){ const v = rms[j - 1] + rms[j] + rms[j + 1]; if (v < best){ best = v; m = j; } }
-    split(a, m); split(m, b);
-  };
-  runs.forEach(r => split(r[0], r[1]));
+  /* Syllables. Smooth the loudness, find its peaks (one per vowel), and cut at the dip between two peaks when the dip
+     is real (clearly quieter than both) and the peaks are far enough apart to be separate syllables. A piece with no
+     pitch in it (s, t, k...) is joined to the syllable that follows, because that is the vowel it belongs to. */
+  /* In flowing speech the overall loudness hardly dips between syllables, so measure the loudness above about 600 Hz
+     instead: vowels are strong there, while m, n, l and the gaps around other consonants are weak. */
+  const e = new Float32Array(nf), hp = new Float32Array(dn), ca = Math.exp(-2 * Math.PI * 600 / dsr);
+  for (let i = 0, l1 = 0, l2 = 0; i < dn; i++){ l1 = ca * l1 + (1 - ca) * y[i]; const h1 = y[i] - l1; l2 = ca * l2 + (1 - ca) * h1; hp[i] = h1 - l2; }
+  const raw2 = new Float32Array(nf);
+  for (let j = 0; j < nf; j++){ let s2 = 0; const o = j * hop; for (let i = 0; i < win; i++) s2 += hp[o + i] * hp[o + i]; raw2[j] = Math.sqrt(s2 / win); }
+  for (let j = 0; j < nf; j++) e[j] = (raw2[Math.max(0, j - 1)] + 2 * raw2[j] + raw2[Math.min(nf - 1, j + 1)]) / 4;
+  const pieces = [];                                          // [first frame, end frame, joined-to-next-in-run?]
+  runs.forEach(([ra, rb]) => {
+    const keep = [], cuts = [];
+    for (let j = ra; j < rb; j++){
+      let top = true;
+      for (let k = -2; k <= 2 && top; k++){ const q = j + k; if (q >= ra && q < rb && (e[q] > e[j] || (e[q] === e[j] && q < j))) top = false; }
+      if (!top) continue;
+      if (!keep.length){ keep.push(j); continue; }
+      const q = keep[keep.length - 1]; let v = q, m = Infinity;
+      for (let i = q; i <= j; i++) if (e[i] < m){ m = e[i]; v = i; }
+      if (j - q < 8 || m > .8 * Math.min(e[j], e[q])){ if (e[j] > e[q]) keep[keep.length - 1] = j; }   // same syllable
+      else { keep.push(j); cuts.push(v); }
+    }
+    let parts = [ra].concat(cuts, [rb]).map((v, i, arr) => i < arr.length - 1 ? [v, arr[i + 1]] : null).filter(Boolean);
+    const voicedIn = p => { let c = 0; for (let j = p[0]; j < p[1]; j++) if (f0[j]) c++; return c; };
+    for (let i = 0; i < parts.length; i++){                   // very long pieces: split again at the quietest point
+      const [a, b] = parts[i];
+      if (b - a > 34){
+        let m = a + 10, best = Infinity;
+        for (let j = a + 10; j < b - 10; j++) if (e[j] < best){ best = e[j]; m = j; }
+        parts.splice(i, 1, [a, m], [m, b]); i--;
+      }
+    }
+    for (let i = 0; i < parts.length - 1; i++)                // consonant-only or tiny piece: give it to the next syllable
+      if (voicedIn(parts[i]) < 3 || parts[i][1] - parts[i][0] < 5){ parts[i + 1][0] = parts[i][0]; parts.splice(i, 1); i--; }
+    if (parts.length > 1){ const z = parts[parts.length - 1]; if (z[1] - z[0] < 5){ parts[parts.length - 2][1] = z[1]; parts.pop(); } }
+    parts.forEach((p, i) => { if (p[1] - p[0] >= 4) pieces.push([p[0], p[1], i < parts.length - 1]); });
+  });
   const hopS = hop * D, offS = win * D / 2, voiced = Array.from(f0).filter(f => f > 0), all = median(voiced);
-  let segs = pieces.slice(0, 200).map(p => ({
-    a: Math.max(0, Math.floor(p[0] * hopS - .005 * sr)),
-    b: Math.min(x.length, Math.floor(p[1] * hopS + offS + .02 * sr)),
-    med: median(Array.from(f0.subarray(p[0], p[1])).filter(f => f > 0))
-  }));
-  if (!segs.length) segs = [{a:0, b:x.length, med:all}];
+  let segs = pieces.slice(0, 200).map((p, i) => {
+    let top = 0; for (let j = p[0]; j < p[1]; j++) if (e[j] > top) top = e[j];
+    let vo = p[0]; for (let j = p[0]; j < p[1]; j++) if (f0[j] && e[j] >= .5 * top){ vo = j; break; }   // where the vowel starts
+    const a = Math.max(0, Math.floor(p[0] * hopS - .005 * sr)), nx = pieces[i + 1];
+    return {a, b: Math.min(x.length, Math.floor(p[1] * hopS + (p[2] ? offS * .5 : offS + .02 * sr))),
+      med: median(Array.from(f0.subarray(p[0], p[1])).filter(f => f > 0)),
+      vo: Math.max(a, Math.floor(vo * hopS + offS * .5)),                     // the beat should land here, not on the consonant
+      end: !nx || nx[0] - p[1] > 16};                                         // a pause follows: the end of a spoken phrase
+  });
+  if (!segs.length) segs = [{a:0, b:x.length, med:all, vo:0, end:true}];
   return {data:x, sr, f0, rms, thr, hopS, offS, segs, center: all ? 69 + 12 * Math.log2(all / 440) : 60, cache:new Map()};
 }
 /* Hard-tune one piece to a note: read it faster or slower, moment by moment, so its pitch stays flat on the target. */
-/* Hold a note. A hard-tuned syllable has one steady pitch, so a slice of its vowel that is a whole number of pitch
-   periods long can be repeated seamlessly, like a sampler's sustain loop. Picks the loudest stretch near the middle. */
-function sustain(out, sr, f, want){
-  const n = out.length;
-  if (want <= n * 1.08 || n < sr * .06) return out;
-  want = Math.min(want, n * 4);
-  const per = sr / f, Lp = Math.round(Math.max(2, Math.round(.035 * sr / per)) * per), xf = Math.min(Lp >> 2, Math.floor(sr * .004));
-  const lo = Math.floor(n * .25), hi = Math.floor(n * .8) - Lp - xf;
+/* Fit a syllable to its note. A hard-tuned syllable has one steady pitch, so whole pitch periods can be repeated (to
+   hold the vowel) or dropped (to shorten it) without a click, like a sampler's sustain loop. Only the vowel after
+   "start" is changed, so the consonants at both ends survive and the word stays clear.
+   want = how long the syllable should last from the vowel onwards, in samples. */
+function fit(out, sr, f, start, want, canHold){
+  const n = out.length, body = n - start, per = sr / f, xf = Math.max(8, Math.min(Math.floor(per), Math.floor(sr * .004)));
+  if (body < sr * .05) return out;
+  const loudest = (lo, hi, len) => {                          // start of the loudest stretch of the given length
+    let a = lo, best = -1;
+    for (let s = lo; s <= hi; s += Math.max(1, Math.floor(per))){ let en = 0; for (let i = 0; i < len; i += 4) en += out[s + i] * out[s + i]; if (en > best){ best = en; a = s; } }
+    return a;
+  };
+  if (body > want * 1.08){                                    // too long: drop whole periods from the middle of the vowel
+    const D = Math.round(Math.floor(Math.min(body - want, body * .65) / per) * per);
+    const lo = start + Math.floor(body * .15) + xf, hi = n - Math.floor(body * .15) - D;
+    if (D < per || hi <= lo) return out;
+    const a = Math.min(hi, Math.max(lo, loudest(lo, hi, Math.round(per * 2)) - (D >> 1)));
+    const res = new Float32Array(n - D);
+    res.set(out.subarray(0, a), 0); res.set(out.subarray(a + D), a);
+    for (let i = 0; i < xf; i++){ const k = i / xf; res[a - xf + i] = out[a - xf + i] * (1 - k) + out[a + D - xf + i] * k; }
+    return res;
+  }
+  if (!canHold || body > want / 1.08) return out;
+  const Lp = Math.round(Math.max(2, Math.round(.035 * sr / per)) * per);   // too short: repeat about 35 ms of the vowel
+  const lo = start + Math.floor(body * .2), hi = n - Math.floor(body * .2) - Lp - xf;
   if (hi <= lo) return out;
-  let a = lo, best = -1;
-  for (let s = lo; s <= hi; s += Lp >> 1){ let e = 0; for (let i = 0; i < Lp; i += 4) e += out[s + i] * out[s + i]; if (e > best){ best = e; a = s; } }
-  const b = a + Lp, reps = Math.ceil((want - n) / Lp), res = new Float32Array(n + reps * Lp);
+  const a = loudest(lo, hi, Lp), b = a + Lp, reps = Math.ceil(Math.min(want - body, body * 3) / Lp), res = new Float32Array(n + reps * Lp);
   res.set(out.subarray(0, b), 0);
   let w = b;
   for (let r = 0; r < reps; r++) for (let i = 0; i < Lp; i++){
     let v = out[a + i];
-    if (i < xf){ const k = i / xf; v = v * k + out[b + i] * (1 - k); }   // blend across the join
+    if (i < xf){ const k = i / xf; v = v * k + out[b + i] * (1 - k); }
     res[w++] = v;
   }
   res.set(out.subarray(b), w);
   return res;
 }
-function tuneData(T, si, midi, kind, from, fill){
+/* fill = seconds the note lasts (0 = leave the length alone); hold = may the vowel be stretched to fill it.
+   The result carries .lead: seconds from its start to the vowel, so the player can put the vowel on the beat. */
+function tuneData(T, si, midi, kind, from, fill, hold){
   const seg = T.segs[si], x = T.data, n = seg.b - seg.a, sr = T.sr;
-  let out;
+  let out, lead = 0;
   if (!seg.med) out = x.slice(seg.a, seg.b);
   else {
     const target = mtof(midi), tmp = new Float32Array(Math.ceil(n / .35) + 4), last = T.f0.length - 1;
-    let pos = seg.a, k = 0, rs = 0;
+    let pos = seg.a, k = 0, rs = 0, lk = -1;
     while (pos < seg.b - 1 && k < tmp.length){
+      if (lk < 0 && pos >= seg.vo) lk = k;
       let f = T.f0[clamp(Math.round((pos - T.offS) / T.hopS), 0, last)];
       if (!f || f > seg.med * 1.5 || f < seg.med / 1.5) f = seg.med;
       const r = clamp(target / (kind === 'nat' ? seg.med : f), .35, 3);   // natural: one shift for the whole syllable
@@ -727,12 +783,18 @@ function tuneData(T, si, midi, kind, from, fill){
       tmp[k++] = x[i] + (x[i + 1] - x[i]) * (pos - i);
       pos += rs;
     }
-    out = tmp.slice(0, k);
-    if (fill && !kind) out = sustain(out, sr, target, Math.floor(fill * sr));
+    out = tmp.slice(0, k); lk = Math.max(0, lk);
+    if (fill && !kind) out = fit(out, sr, target, lk, Math.floor(fill * sr), hold);
+    if (fill){                                                // even out loud and quiet syllables
+      let pk = 0; for (let i = 0; i < out.length; i++){ const v = Math.abs(out[i]); if (v > pk) pk = v; }
+      const g = pk ? clamp(.7 / pk, 1, 3) : 1; if (g > 1.02) for (let i = 0; i < out.length; i++) out[i] *= g;
+    }
+    lead = lk / sr;
   }
   const fi = Math.min(out.length >> 1, Math.floor(sr * .003)), fo = Math.min(out.length >> 1, Math.floor(sr * .015));
   for (let i = 0; i < fi; i++) out[i] *= i / fi;
   for (let i = 0; i < fo; i++) out[out.length - 1 - i] *= i / fo;
+  out.lead = lead;
   return out;
 }
 /* Turn a hummed or beatboxed take into notes and drum hits. Each 10 ms slice is either a pitch (pulled onto the key),
@@ -784,11 +846,11 @@ function buildBeat(L, sd){
   return {period, ev};
 }
 /*ENDDSP*/
-function tuned(T, si, midi, kind, from, fill){
-  const key = si + '/' + midi + (kind ? '/' + kind + '/' + from : '') + (fill ? '/f' + Math.round(fill * 50) : ''); let b = T.cache.get(key);
+function tuned(T, si, midi, kind, from, fill, hold){
+  const key = si + '/' + midi + (kind ? '/' + kind + '/' + from : '') + (fill ? '/f' + Math.round(fill * 50) + (hold ? 'h' : '') : ''); let b = T.cache.get(key);
   if (!b){
-    const d = tuneData(T, si, midi, kind, from, fill);
-    b = ctx.createBuffer(1, Math.max(1, d.length), T.sr); b.getChannelData(0).set(d);
+    const d = tuneData(T, si, midi, kind, from, fill, hold);
+    b = ctx.createBuffer(1, Math.max(1, d.length), T.sr); b.getChannelData(0).set(d); b.lead = d.lead || 0;
     if (T.cache.size > Math.max(300, T.segs.length * 8)) T.cache.clear();   // keep memory in check on phones
     T.cache.set(key, b);
   }
@@ -800,34 +862,52 @@ function arrange(L){
   const pr = rng(L.seed ^ 0x5bd1e995);                      // chop pattern: mostly in order, sometimes a surprise slice
   L.pat = Array.from({length:64}, () => pr() < .6 ? -1 : pr());
   L.ev = {}; if (!L.take) return;
-  const rnd = rng(L.seed), R = [[0,2,4,6,8,12],[0,3,6,8,10,12,14],[0,4,6,8,10,12],[2,4,6,8,12,14],[0,2,3,6,8,10,12]];
-  const rA = R[rnd() * R.length | 0], rB = R[rnd() * R.length | 0], end = [0,2,4,8], moves = [-1,-1,0,1,1,2,-2], mel = [];
-  let w = 0;
-  for (let bar = 0; bar < 4; bar++){
-    const rh = bar === 3 ? end : bar % 2 ? rB : rA;
-    rh.forEach((st, i) => {
-      w = clamp(w + moves[rnd() * moves.length | 0], -2, 2);
-      if (bar === 3 && i === rh.length - 1) w = 0;
-      mel.push({st: bar * 16 + st, len: (rh[i + 1] || 16) - st, off: w});
-    });
-  }
-  L.ev = {}; let si = 0;
-  mel.forEach(m => { L.ev[m.st] = {len:m.len, off:m.off}; });
-  L.next = 0;
+  /* The tune is four bars in two phrases: motif, ending, the same motif again, final ending. Repeating the motif is
+     what makes it sound like a melody, and each ending holds its last note for a beat and then rests, so the song
+     breathes. Notes are steps up and down a five-note scale (not chord-note numbers), so the shape stays the same as
+     the chords change. There is a faster set of rhythms and a slower one; the player picks by tempo. */
+  const walk = (rnd, n, from, lo, hi) => {                    // wander by small steps; bounce off the ends; never sit on one note
+    const o = []; let w = clamp(from, lo, hi);
+    for (let i = 0; i < n; i++){
+      o.push(w);
+      let st = [-1,-1,0,1,1,2,-2][rnd() * 7 | 0];
+      if (st === 0 && i && o[i - 1] === w) st = rnd() < .5 ? -1 : 1;
+      if (w + st > hi || w + st < lo) st = -st;
+      w = clamp(w + st, lo, hi);
+    }
+    return o;
+  };
+  const build = (rnd, bars, ends, lift, twoBar) => {
+    const A = bars[rnd() * bars.length | 0], E1 = ends[rnd() * ends.length | 0], E2 = ends[rnd() * ends.length | 0];
+    const cA = walk(rnd, A.length, lift, lift - 2, lift + 2), last = cA[cA.length - 1];
+    const form = twoBar ? [[A, cA], [E2, walk(rnd, E2.length, last, lift - 2, lift + 2)]]
+                        : [[A, cA], [E1, walk(rnd, E1.length, last, lift - 1, lift + 2)], [A, cA], [E2, walk(rnd, E2.length, last, lift - 2, lift + 1)]];
+    const ev = {}; let hi = 0;
+    form.forEach(([rh, co], bar) => rh.forEach((st, i) => {
+      const lastNote = i === rh.length - 1, ending = bar % 2 === 1;
+      ev[bar * 16 + st] = {len: lastNote ? (ending ? 4 : 16 - st) : rh[i + 1] - st, idx: co[i], strong: st === 0 || (lastNote && ending), hi: hi++};
+    }));
+    return ev;
+  };
+  const FAST = [[0,4,6,8,12],[0,2,4,8,10,12],[0,4,8,10,12],[2,4,6,8,12],[0,4,6,8,10,12],[0,2,4,6,8,12]], FAST_END = [[0,4,8],[0,2,4,8],[0,4,6,8]];
+  const SLOW = [[0,4,8,12],[0,8,12],[0,4,8],[4,8,12]], SLOW_END = [[0,8],[0,4,8]];
+  L.mel = {fast: build(rng(L.seed), FAST, FAST_END, 0), slow: build(rng(L.seed + 1), SLOW, SLOW_END, 0)};
+  L.next = 0; L.restBar = -1;
   /* Chorus: split the take into phrases at the pauses, pick one of 3 to 8 syllables as the hook, and give it a
      two-bar tune of its own that sits a little higher and repeats exactly. */
   const hr = rng(L.seed ^ 0x9e3779b9), segs = L.take.segs, phrases = [[]];
-  segs.forEach((g, i) => { if (i && g.a - segs[i - 1].b > .08 * L.take.sr) phrases.push([]); phrases[phrases.length - 1].push(i); });
+  segs.forEach((g, i) => { phrases[phrases.length - 1].push(i); if (g.end && i < segs.length - 1) phrases.push([]); });
   const cands = phrases.filter(ph => ph.length >= 3 && ph.length <= 8);
   L.hook = cands.length ? cands[hr() * cands.length | 0] : segs.slice(0, 6).map((_, i) => i);
-  L.cho = {}; let hw = 1, hi = 0;
-  [R[hr() * R.length | 0], end].forEach((rh, b) => rh.forEach((st, i) => {
-    hw = clamp(hw + moves[hr() * moves.length | 0], -1, 3);
-    if (b === 1 && i === rh.length - 1) hw = 0;
-    L.cho[b * 16 + st] = {len: (rh[i + 1] || 16) - st, off: hw, hi: hi++};
-  }));
+  L.cho = {fast: build(rng(L.seed + 2), FAST, FAST_END, 1, true), slow: build(rng(L.seed + 3), SLOW, SLOW_END, 1, true)};
 }
-/* Auto-tune: the notes of the beat's key that always sound good (a five-note scale), and the nearest one to a pitch. */
+/* The notes a voice can sing: the key's five-note scale within about half an octave either side of where it speaks. */
+function singScale(S, center){
+  const pcs = keyScale(S), c = Math.round(center), notes = [];
+  for (let m = c - 7; m <= c + 9; m++) if (pcs.includes(((m % 12) + 12) % 12)) notes.push(m);
+  let mid = 0; notes.forEach((m, i) => { if (Math.abs(m - c) < Math.abs(notes[mid] - c)) mid = i; });
+  return {notes, mid};
+}
 function isMinor(S){ const tonic = S.prog.find(p => p[0] === 0); return !tonic || tonic[1][0] === 'm' || tonic[1] === '5'; }
 function fullScale(S){ return (isMinor(S) ? [0,2,3,5,7,8,10] : [0,2,4,5,7,9,11]).map(x => (S.key + x) % 12); }
 function keyScale(S){ return (isMinor(S) ? [0,3,5,7,10] : [0,2,4,7,9]).map(x => (S.key + x) % 12); }
@@ -1107,16 +1187,26 @@ function scheduleStep(n, t){
   const singers = layers.filter(L => L.mode === 'sing' && !L.muted);
   const lead = singers.length ? singers[bar8 % singers.length] : null;
   const inCho = !!lead && lead.chorus && bar8 % 8 >= 4;       // four bars of verse, then four of chorus
-  const e = lead && (inCho ? lead.cho[(bar8 % 2) * 16 + ps] : lead.ev[bar * 16 + ps]);
+  const quick = sd * 2 >= .2;                                 // half-beats of 0.2 s or more are singable; any faster, sing on the beats
+  const tuneMap = lead && (inCho ? lead.cho : lead.mel)[quick ? 'fast' : 'slow'];
+  if (lead && s === 0 && lead.restBar !== bar8) lead.restBar = -1;
+  const e = tuneMap && lead.restBar !== bar8 && tuneMap[(inCho ? bar8 % 2 : bar) * 16 + ps];
   if (e){
+    const segs = lead.take.segs;
     const si = inCho ? lead.hook[e.hi % lead.hook.length]     // chorus: the hook phrase, the same every time
-                     : lead.next++ % lead.take.segs.length;   // verse: next syllable; wraps only after the last one
-    const fill = lead.hold === false ? 0 : e.len * sd * .92;   // hold each syllable for the length of its note
-    const lad = ladder(root, type, lead.take.center + fxOf(lead).pitch);
-    const ix = clamp(lad.mid + e.off, 0, lad.notes.length - 1), midi = lad.notes[ix], dur = e.len * sd;
+                     : lead.next++ % segs.length;             // verse: next syllable; wraps only after the last one
+    if (!inCho && segs[si].end && segs.length > 1) lead.restBar = bar8;   // a spoken phrase just ended: rest until the next bar
+    const sc = singScale(S, lead.take.center + fxOf(lead).pitch), chordPcs = CHORDS[type].map(iv => (root + iv) % 12);
+    const ix = clamp(sc.mid + e.idx, 0, sc.notes.length - 1);
+    const midi = e.strong ? snap(sc.notes[ix], chordPcs) : sc.notes[ix];   // strong notes land on a note of the chord
+    const dur = e.len * sd, hold = lead.hold !== false;
+    const b1 = tuned(lead.take, si, midi, undefined, null, dur * .95, hold);
     choke(lead, t);
-    playBuf(lead, tuned(lead.take, si, midi, undefined, null, fill), t, 1, fill ? .85 : 1, dur);
-    if ((lead.harmony || inCho) && ix + 1 < lad.notes.length) playBuf(lead, tuned(lead.take, si, lad.notes[ix + 1], undefined, null, fill), t, 1, .55, dur);   // the chorus always gets a harmony
+    playBuf(lead, b1, t, 1, .6, dur, 0, b1.lead);
+    if (lead.harmony || inCho){                               // the chorus always gets a harmony
+      const hm = snap(midi + 3.5, chordPcs), b2 = tuned(lead.take, si, hm, undefined, null, dur * .95, hold);
+      if (hm !== midi) playBuf(lead, b2, t, 1, .35, dur, 0, b2.lead);
+    }
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
     vis.push({t, id:lead.id}); mark('L' + lead.id, midi, e.len);
   }
@@ -1242,7 +1332,7 @@ function reversed(buf){
   }
   return r;
 }
-function playBuf(L, buf, t, rate, vol, dur, off){
+function playBuf(L, buf, t, rate, vol, dur, off, lead){
   const plain = L.mode === 'fit' || L.mode === 'chop';        // sampled music is never voiced
   const V = plain ? VOICES[0] : VOICES[L.voice] || VOICES[0], F = plain ? voiceFx(0) : fxOf(L);
   if (V.rev) buf = reversed(buf);
@@ -1274,7 +1364,10 @@ function playBuf(L, buf, t, rate, vol, dur, off){
   const g = ctx.createGain(); g.gain.value = vol * (V.gain || 1); node.connect(g);
   g.connect(sampleBus); if (L.echo) g.connect(echoIn);
   if (F.room > 0){ const send = ctx.createGain(); send.gain.value = F.room; g.connect(send); send.connect(hallIn); }
-  src.start(t, off || 0);
+  if (lead){                                                 // start early by the length of the consonant, so the vowel lands on the beat
+    const when = t - lead, now = ctx.currentTime + .005;
+    if (when >= now) src.start(when); else src.start(now, Math.min(buf.duration, now - when));
+  } else src.start(t, off || 0);
   if (dur){ g.gain.setTargetAtTime(0, t + dur, .03); src.stop(t + dur + .2); }
   L.cur.push({src, g});
 }
@@ -1283,7 +1376,7 @@ function playBuf(L, buf, t, rate, vol, dur, off){
    scheduled 3 seconds ahead. The timer runs in a worker where possible, because worker timers are slowed less. */
 function tick(){
   if (nextT < ctx.currentTime - .25) nextT = ctx.currentTime + .05;   // fell behind: skip, don't catch up
-  while (nextT < ctx.currentTime + (document.hidden ? 3 : .14)){
+  while (nextT < ctx.currentTime + (document.hidden ? 3 : .22)){
     const sd = stepDur(), s = MAP[step % BAR]; let off = 0;
     if (style.sw && BEAT === 4){ if (style.sw8){ if (s % 4 === 2) off = style.sw * sd * 2; } else if (s % 2 === 1) off = style.sw * sd; }
     scheduleStep(step, nextT + off); G++;
