@@ -328,7 +328,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.26.0';   // bump this with each release
+const VERSION = '1.28.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -577,7 +577,7 @@ const INSTS = [
 ];
 const TUNES = [
   {name:'Classic',icon:'🎤',id:'hard'},{name:'Natural',icon:'🌿',id:'nat'},{name:'Slide',icon:'🎢',id:'glide'},
-  {name:'Follow chords',icon:'🎹',id:'chord'},{name:'One note',icon:'📏',id:'one'},{name:'Choir',icon:'👯',id:'choir'}
+  {name:'Follow chords',icon:'🎹',id:'chord'},{name:'One note',icon:'📏',id:'one'},{name:'Choir',icon:'👯',id:'choir'},{name:'As spoken',icon:'🗣️',id:'free'}
 ];
 const PARTS = [
   {id:'drums',name:'Drums',icon:'🥁',on:true},{id:'bass',name:'Bass',icon:'🎸',on:true},
@@ -901,6 +901,18 @@ function arrange(L){
   L.hook = cands.length ? cands[hr() * cands.length | 0] : segs.slice(0, 6).map((_, i) => i);
   L.cho = {fast: build(rng(L.seed + 2), FAST, FAST_END, 1, true), slow: build(rng(L.seed + 3), SLOW, SLOW_END, 1, true)};
 }
+/* Auto-tune timing: put each syllable's vowel on the nearest step of the beat, counting from the first syllable (which
+   goes on the downbeat). Steps are quarter-beats unless those are too fast to speak on, then half-beats. Two syllables
+   never share a step. gap = steps until the next syllable, which is how much room this one has. */
+function buildTune(L, sd){
+  const T = L.take, segs = T.segs, grid = sd >= .11 ? 1 : 2, when = g => (g.med ? g.vo : g.a) / T.sr, t0 = when(segs[0]), on = [];
+  let lastQ = -grid;
+  segs.forEach(g => { let q = Math.round((when(g) - t0) / (sd * grid)) * grid; if (q <= lastQ) q = lastQ + grid; lastQ = q; on.push(q); });
+  const z = segs[segs.length - 1], need = (lastQ * sd + (z.b - z.vo) / T.sr) / (sd * BAR);
+  const period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * BAR, ev = new Map();
+  on.forEach((q, i) => { if (q < period) ev.set(q, {i, gap: (i + 1 < on.length ? Math.min(on[i + 1], period) : period) - q}); });
+  return {period, ev, on};
+}
 /* The notes a voice can sing: the key's five-note scale within about half an octave either side of where it speaks. */
 function singScale(S, center){
   const pcs = keyScale(S), c = Math.round(center), notes = [];
@@ -1210,7 +1222,7 @@ function scheduleStep(n, t){
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
     vis.push({t, id:lead.id}); mark('L' + lead.id, midi, e.len);
   }
-  if (parts.riff && !own && !lead){
+  if (parts.riff && !own && !lead && !layers.some(L => !L.muted && L.mode === 'tune' && L.take)){   // the riff rests while a voice has the tune
     const r = riffFor(S)[bar % 2][ps];
     if (r){ const m = (r.i < notes.length ? notes[r.i] : notes[0] + 12) + 12; tone(t, m, Math.min(r.len, 4) * sd * .9, 'square', .035, 2600, .01); mark('Riff', m, Math.min(r.len, 4)); }
   }
@@ -1219,39 +1231,60 @@ function scheduleStep(n, t){
       choke(L, t); playBuf(L, L.buf, t, rawRate(L), 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rawRate(L) / sd);
     }
   });
-  /* as recorded, or auto-tuned: the whole take in its own timing, repeating every 1, 2, 4 or 8 bars, whichever it fits in.
-     Auto-tune keeps each syllable where it was spoken but pulls its pitch onto the nearest note of the beat's key. */
+  /* as recorded: the whole take in its own timing, repeating every 1, 2, 4, 8 or 16 bars, whichever it fits in */
   if (s === 0) layers.forEach(L => {
-    if ((L.mode !== 'plain' && L.mode !== 'tune') || L.muted || L.b0 == null) return;
-    const P = fxOf(L).pitch, rate = L.mode === 'plain' ? rawRate(L) : 1;
-    const need = L.buf.duration / rate / (sd * BAR), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
+    if (L.mode !== 'plain' || L.muted || L.b0 == null) return;
+    const rate = rawRate(L), need = L.buf.duration / rate / (sd * BAR), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
     if (pos(L) % (bars * BAR)) return;
+    choke(L, t); playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rate / sd);
+  });
+  /* Auto-tune: the take keeps its own order and roughly its own rhythm, but each syllable is nudged onto the nearest
+     step of the beat (vowel on the step), shortened if it would run into the next one, and tuned.
+     Classic: the voice's own rise and fall is exaggerated, then held flat on the nearest of five safe notes, with the
+     syllables that land on a beat pulled to a note of the chord. Natural: gentler, seven notes, keeps the voice's own
+     movement. Slide: glides from note to note. Follow chords: only notes of the chord playing. One note: everything
+     on the key note. Choir: Classic plus a voice above and a voice an octave below. As spoken: see below. */
+  layers.forEach(L => {
+    if (L.muted || L.mode !== 'tune' || !L.take || L.b0 == null) return;
+    if (TUNES[L.tstyle || 0].id === 'free'){
+      /* As spoken: tuned like Classic, but every syllable starts exactly when it was spoken and keeps its full length.
+         Nothing is moved to the beat or shortened; the take simply loops in the smallest number of bars it fits in. */
+      const T = L.take, need = L.buf.duration / (sd * BAR), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * BAR;
+      const from = (pos(L) % period) * sd, P = fxOf(L).pitch, five = keyScale(S);
+      if (from === 0) choke(L, t);
+      T.segs.forEach((g, i) => {
+        const off = g.a / T.sr - from;
+        if (off < 0 || off >= sd) return;                     // only the syllables that begin during this step
+        const m = g.med ? snap(T.center + clamp((69 + 12 * Math.log2(g.med / 440) - T.center) * 2.2, -9, 9) + P, five) : 60;
+        playBuf(L, tuned(T, i, m, undefined, null, (g.b - g.a) / T.sr * 2 + 1, false), t + off, 1, .8);
+        vis.push({t: t + off, id:L.id}); mark('L' + L.id, g.med ? m : 0, (g.b - g.a) / T.sr / sd);
+      });
+      return;
+    }
+    const key = tempo + '|' + sigIx;
+    if (L.qkey !== key){ L.qkey = key; L.tq = buildTune(L, sd); }
+    const at = pos(L) % L.tq.period, e = L.tq.ev.get(at);
+    if (at === 0) L.prevNote = null;
+    if (!e) return;
+    const g = L.take.segs[e.i], A = TUNES[L.tstyle || 0].id, P = fxOf(L).pitch, five = keyScale(S), chordPcs = CHORDS[type].map(iv => (root + iv) % 12);
+    let m = 60;
+    if (g.med){
+      const c = L.take.center, sung = 69 + 12 * Math.log2(g.med / 440);
+      if (A === 'one') m = snap(c + P, [S.key % 12]);
+      else if (A === 'chord') m = snap(sung + P, chordPcs);
+      else if (A === 'nat') m = snap(sung + P, fullScale(S));
+      else { m = snap(c + clamp((sung - c) * 2.2, -9, 9) + P, five); if (ps % 4 === 0) m = snap(m, chordPcs); }
+    }
+    const kind = A === 'nat' || A === 'glide' ? A : undefined, room = e.gap * sd, natural = (g.b - g.vo) / L.take.sr;
+    const b1 = tuned(L.take, e.i, m, kind, A === 'glide' && L.prevNote != null ? L.prevNote : null, room * .97, false);
     choke(L, t);
-    if (L.mode === 'plain'){ playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rate / sd); return; }
-    /* Auto-tune styles. Classic: flat on the nearest of five safe notes. Natural: gentler, seven notes, keeps the
-       voice's own rise and fall. Slide: glides from note to note. Follow chords: uses the notes of the chord playing
-       in that bar. One note: everything on the key note. Choir: Classic plus a voice above and a voice an octave below. */
-    const A = TUNES[L.tstyle || 0].id, five = keyScale(S), pcs = A === 'nat' ? fullScale(S) : five;
-    const kind = A === 'nat' || A === 'glide' ? A : undefined;
-    let prev = null;
-    L.take.segs.forEach((g, i) => {
-      const at = t + g.a / L.take.sr; let m = 60;
-      if (g.med){
-        const sung = 69 + 12 * Math.log2(g.med / 440) + P;
-        if (A === 'one') m = snap(L.take.center + P, [S.key % 12]);
-        else if (A === 'chord'){
-          const c = S.prog[(bar + Math.floor(g.a / L.take.sr / (sd * BAR))) % 4];
-          m = snap(sung, CHORDS[c[1]].map(iv => (S.key + c[0] + iv) % 12));
-        } else m = snap(sung, pcs);
-      }
-      playBuf(L, tuned(L.take, i, m, kind, A === 'glide' && prev != null ? prev : null), at, 1, 1);
-      if (A === 'choir' && g.med){
-        playBuf(L, tuned(L.take, i, snap(m + 3.5, five)), at, 1, .5);
-        playBuf(L, tuned(L.take, i, m - 12), at, 1, .5);
-      }
-      if (g.med) prev = m;
-      vis.push({t:at, id:L.id}); mark('L' + L.id, g.med ? m : 0, (g.b - g.a) / L.take.sr / sd, Math.round((at - t) / sd));
-    });
+    playBuf(L, b1, t, 1, .8, natural > room ? room : 0, 0, b1.lead);
+    if (A === 'choir' && g.med){
+      const up = tuned(L.take, e.i, snap(m + 3.5, five), undefined, null, room * .97, false), dn = tuned(L.take, e.i, m - 12, undefined, null, room * .97, false);
+      playBuf(L, up, t, 1, .4, natural > room ? room : 0, 0, up.lead); playBuf(L, dn, t, 1, .4, natural > room ? room : 0, 0, dn.lead);
+    }
+    if (g.med) L.prevNote = m;
+    vis.push({t, id:L.id}); mark('L' + L.id, g.med ? m : 0, Math.min(e.gap, natural / sd));
   });
   /* instrument: the hummed tune played as notes (and beatbox noises as drums), snapped to the key and to the beat grid */
   layers.forEach(L => {
