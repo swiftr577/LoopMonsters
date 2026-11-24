@@ -345,7 +345,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.29.0';   // bump this with each release
+const VERSION = '1.30.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -585,7 +585,8 @@ function voiceFx(i){
 }
 const fxOf = L => L.fx || (L.fx = voiceFx(L.voice));
 const rawRate = L => { const F = fxOf(L); return F.speed * Math.pow(2, F.pitch / 12); };   // untuned playback: pitch and speed move together
-const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Rap',icon:'🧢',id:'rap'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'Band',icon:'🎺',id:'band'},{name:'Beat',icon:'🥁',id:'beat'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
+const isSing = L => L.mode === 'sing' || L.mode === 'sing2';
+const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'Sing 2',icon:'🎙️',id:'sing2'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Rap',icon:'🧢',id:'rap'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'Band',icon:'🎺',id:'band'},{name:'Beat',icon:'🥁',id:'beat'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const MODES_MUSIC = [{name:'Fit to beat',icon:'🎯',id:'fit'},{name:'Chop up',icon:'✂️',id:'chop'},{name:'As recorded',icon:'📼',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const KINDS = [{name:'Voice',icon:'🗣️',id:'voice',secs:10},{name:'Music',icon:'🎸',id:'music',secs:16}];
 const INSTS = [
@@ -780,6 +781,61 @@ function fit(out, sr, f, start, want, canHold){
   res.set(out.subarray(b), w);
   return res;
 }
+/* Natural-voice tuning (Sing 2). The other tuner changes pitch by playing a syllable faster or slower, which also
+   shifts the "shape" of the voice: up sounds like a chipmunk, down like a monster. This one leaves the shape alone.
+   It finds each vibration of the voice (one per pitch period), lifts each out with a soft window, and lays them down
+   again closer together or further apart, which changes the pitch but not the character. Repeating or skipping
+   vibrations changes the length, so holding and shortening notes come for free. Consonants are copied untouched.
+   f = target Hz; want = samples the syllable should last from the vowel on (0 = as spoken); hold = may it be stretched. */
+function psola(T, seg, f, want, hold){
+  const x = T.data, sr = T.sr, a = seg.a, b = seg.b, last = T.f0.length - 1;
+  const fr = p => clamp(Math.round((p - T.offS) / T.hopS), 0, last);
+  const f0at = p => { let v = T.f0[fr(p)]; if (!v || v > seg.med * 1.5 || v < seg.med / 1.5) v = seg.med; return v; };
+  let j0 = -1, j1 = -1;
+  for (let j = fr(a); j <= fr(b); j++) if (T.f0[j]){ if (j0 < 0) j0 = j; j1 = j; }
+  if (j0 < 0) return null;
+  const v0 = clamp(Math.floor(j0 * T.hopS + T.offS * .5), a, b - 2), v1 = clamp(Math.floor(j1 * T.hopS + T.offS * 1.5), v0 + 1, b), Lv = v1 - v0;
+  if (Lv < sr * .03) return null;
+  /* pitch marks: one strong peak per vibration, tracked outwards from the middle of the vowel */
+  const Tm = sr / seg.med, mid = v0 + (Lv >> 1);
+  let up = 0, dn = 0;
+  for (let i = Math.max(a, Math.floor(mid - Tm)); i < Math.min(b, mid + Tm); i++){ if (x[i] > up) up = x[i]; if (-x[i] > dn) dn = -x[i]; }
+  const sg = up >= dn ? 1 : -1;
+  const peak = (lo, hi) => { lo = Math.max(a, Math.floor(lo)); hi = Math.min(b - 1, Math.ceil(hi)); let m = lo, bv = -Infinity; for (let i = lo; i <= hi; i++){ const v = sg * x[i]; if (v > bv){ bv = v; m = i; } } return m; };
+  const first = peak(mid - Tm / 2, mid + Tm / 2), marks = [first];
+  for (let p = first;;){ const Tp = sr / f0at(p), n = peak(p + Tp * .7, p + Tp * 1.3); if (n >= v1 || n <= p) break; marks.push(n); p = n; }
+  for (let p = first;;){ const Tp = sr / f0at(p), n = peak(p - Tp * 1.3, p - Tp * .7); if (n <= v0 || n >= p) break; marks.unshift(n); p = n; }
+  if (marks.length < 3) return null;
+  /* how long the vowel should be */
+  const pre = v0 - a, tail = b - v1;
+  let des = Lv;
+  if (want){ des = want - tail; des = des > Lv ? (hold ? Math.min(des, Lv * 4) : Lv) : Math.max(des, Lv * .35, sr * .04); }
+  des = Math.floor(des);
+  const edge = Math.min(sr * .05, Lv * .3), To = sr / f;
+  /* the start and end of the vowel keep their natural speed; only the steady middle is stretched or squeezed */
+  const map = tau => des >= 2 * edge + To ? (tau < edge ? tau : tau > des - edge ? Lv - (des - tau) : edge + (tau - edge) * (Lv - 2 * edge) / (des - 2 * edge)) : tau * Lv / des;
+  const out = new Float32Array(pre + des + tail + Math.ceil(Tm * 2) + 8), fadeN = Math.min(pre, Math.floor(Tm));
+  for (let i = 0; i < pre; i++) out[i] = x[a + i] * (i >= pre - fadeN ? (pre - i) / fadeN : 1);
+  let j = 0;
+  for (let tau = 0; tau < des;){
+    const src = v0 + map(tau);
+    while (j < marks.length - 1 && Math.abs(marks[j + 1] - src) <= Math.abs(marks[j] - src)) j++;
+    while (j > 0 && Math.abs(marks[j - 1] - src) < Math.abs(marks[j] - src)) j--;
+    const m = marks[j], Tj = Math.round(clamp(j > 0 && j < marks.length - 1 ? (marks[j + 1] - marks[j - 1]) / 2 : j > 0 ? m - marks[j - 1] : marks[1] - m, Tm * .6, Tm * 1.6));
+    const g = clamp(To / Tj, .5, 2), at = pre + Math.round(tau);
+    for (let i = -Tj; i < Tj; i++){
+      const si = m + i, oi = at + i;
+      if (si < a || si >= b || oi < 0 || oi >= out.length) continue;
+      out[oi] += x[si] * (.5 + .5 * Math.cos(Math.PI * i / Tj)) * g;
+    }
+    tau += To / Math.pow(f0at(m) / seg.med, .15);            // keep a trace of the voice's own movement, so it isn't robotic
+  }
+  const fin = Math.min(tail, Math.floor(Tm));
+  for (let i = 0; i < tail; i++) out[pre + des + i] += x[v1 + i] * (i < fin ? i / fin : 1);
+  const res = out.subarray(0, pre + des + tail).slice();
+  res.lead = pre / sr;
+  return res;
+}
 /* fill = seconds the note lasts (0 = leave the length alone); hold = may the vowel be stretched to fill it.
    The result carries .lead: seconds from its start to the vowel, so the player can put the vowel on the beat. */
 function tuneData(T, si, midi, kind, from, fill, hold){
@@ -789,7 +845,10 @@ function tuneData(T, si, midi, kind, from, fill, hold){
     let pk = 0; for (let i = 0; i < out.length; i++){ const v = Math.abs(out[i]); if (v > pk) pk = v; }
     const g = pk ? clamp(.7 / pk, 1, 3) : 1; if (g > 1.02) for (let i = 0; i < out.length; i++) out[i] *= g;
   };
-  if (kind === 'raw'){                                        // rap: the spoken pitch is left alone, only the length is fitted
+  const nat = kind === 'ps' && seg.med ? psola(T, seg, mtof(midi), fill ? Math.floor(fill * sr) : 0, hold) : null;
+  if (kind === 'ps' && !nat) kind = seg.med ? undefined : 'raw';   // too little voice to work with: fall back
+  if (nat){ out = nat; lead = nat.lead; if (fill) even(); }
+  else if (kind === 'raw'){                                   // rap: the spoken pitch is left alone, only the length is fitted
     const lk = Math.max(0, seg.vo - seg.a);
     out = x.slice(seg.a, seg.b);
     if (fill && seg.med) out = fit(out, sr, seg.med, lk, Math.floor(fill * sr), false);
@@ -1267,7 +1326,7 @@ function scheduleStep(n, t){
   if (parts.twinkle && !own && s % 2 === 0) tone(t, notes[[0,2,1,2,0,1,2,1][(s >> 1) % 8] % notes.length] + 24, sd * 1.8, 'sine', .07, 6000);
 
   /* Singers and rappers take turns: one bar each, or two bars each when there is a rapper (a rap battle). */
-  const singers = layers.filter(L => (L.mode === 'sing' || (L.mode === 'rap' && !L.rapfix)) && L.take && !off(L));
+  const singers = layers.filter(L => (isSing(L) || (L.mode === 'rap' && !L.rapfix)) && L.take && !off(L));
   const lead = singers.length ? singers[(singers.some(L => L.mode === 'rap') ? bar8 >> 1 : bar8) % singers.length] : null;
   if (lead && lead.mode === 'rap'){
     /* Rap: syllables are dealt onto the flow in order, each one squeezed to fit its slot with the vowel on the step.
@@ -1284,7 +1343,7 @@ function scheduleStep(n, t){
       vis.push({t, id:lead.id}); mark('L' + lead.id, 0, e.len);
     }
   }
-  const sung = lead && lead.mode === 'sing' ? lead : null;
+  const sung = lead && isSing(lead) ? lead : null;
   const inCho = !!sung && (song ? song.chorus : sung.chorus && bar8 % 8 >= 4);   // loop: four bars of verse, then four of chorus
   const quick = sd * 2 >= .2;                                 // half-beats of 0.2 s or more are singable; any faster, sing on the beats
   const tuneMap = sung && (inCho ? sung.cho : sung.mel)[quick ? 'fast' : 'slow'];
@@ -1298,12 +1357,12 @@ function scheduleStep(n, t){
     const sc = singScale(S, lead.take.center + fxOf(lead).pitch), chordPcs = CHORDS[type].map(iv => (root + iv) % 12);
     const ix = clamp(sc.mid + e.idx, 0, sc.notes.length - 1);
     const midi = e.strong ? snap(sc.notes[ix], chordPcs) : sc.notes[ix];   // strong notes land on a note of the chord
-    const dur = e.len * sd, hold = lead.hold !== false;
-    const b1 = tuned(lead.take, si, midi, undefined, null, dur * .95, hold);
+    const dur = e.len * sd, hold = lead.hold !== false, how = lead.mode === 'sing2' ? 'ps' : undefined;   // Sing 2: natural-voice tuning
+    const b1 = tuned(lead.take, si, midi, how, null, dur * .95, hold);
     choke(lead, t);
     playBuf(lead, b1, t, 1, .6, dur, 0, b1.lead);
     if (lead.harmony || inCho){                               // the chorus always gets a harmony
-      const hm = snap(midi + 3.5, chordPcs), b2 = tuned(lead.take, si, hm, undefined, null, dur * .95, hold);
+      const hm = snap(midi + 3.5, chordPcs), b2 = tuned(lead.take, si, hm, how, null, dur * .95, hold);
       if (hm !== midi) playBuf(lead, b2, t, 1, .35, dur, 0, b2.lead);
     }
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
@@ -1595,7 +1654,7 @@ function surprise(){
   const S = pick(STYLES); pickStyle(S, Math.random() * 3 | 0); setTempo(S.bpm);
   layers.forEach(L => {
     if (L.kind === 'music' || !L.take || L.buf.duration < 1) return;      // leave sampled music and short noises as they are
-    L.mode = pick(['sing', 'sing', 'tune', 'rap']); L.voice = Math.random() * VOICES.length | 0; L.fx = voiceFx(L.voice);
+    L.mode = pick(['sing', 'sing2', 'sing2', 'tune', 'rap']); L.voice = Math.random() * VOICES.length | 0; L.fx = voiceFx(L.voice);
     L.tstyle = Math.random() * 6 | 0; L.seed = Math.random() * 1e9 | 0; arrange(L); restart(L);
   });
   drawBeats(); drawLayers();
@@ -1769,7 +1828,7 @@ function addLayer(buf, mode, kind){
   L.chorus = !!L.take && L.take.segs.length >= 8;            // enough words for a verse and a chorus
   layers.push(L); selId = L.id;
   drawLayers();
-  const singers = layers.filter(l => l.mode === 'sing').length;
+  const singers = layers.filter(isSing).length;
   if (kind === 'music') say('Your music is looping in time with the beat! Tap the monster to chop it up.');
   else say(mode === 'sing' ? (singers > 1 ? 'Now your monsters take turns singing!' : "That's your song! Tap the monster to change it, or try the other choices.")
                       : 'Added! Tap the monster to change it.');
@@ -1882,13 +1941,14 @@ function drawPanel(){
     L.mode = modes[i].id; restart(L); drawPanel();
     if (L.mode === 'band') say('This monster plays your tune with its own band, so the usual band takes a rest.');
     if (L.mode === 'beat') say('This monster is the drummer now, so the usual drums take a rest.');
+    if (L.mode === 'sing2') say('Sing 2 keeps the voice sounding like the person, while still singing in tune.');
     if (L.mode === 'rap') say(layers.filter(l => l.mode === 'rap').length > 1 ? 'Rap battle! The rappers take two bars each.' : 'Your words are now a rap. Add a second rapper for a battle.');
   });
-  $('#singopts').hidden = L.mode !== 'sing' && L.mode !== 'chop' && L.mode !== 'rap'; $('#loopopts').hidden = L.mode !== 'loop';
+  $('#singopts').hidden = !isSing(L) && L.mode !== 'chop' && L.mode !== 'rap'; $('#loopopts').hidden = L.mode !== 'loop';
   $('#newtune').textContent = L.mode === 'chop' ? '🎲 New chop' : L.mode === 'rap' ? '🎲 New flow' : '🎲 New tune';
   $('#newtune').hidden = L.mode === 'rap' && !!L.rapfix;
   ['#rapfix', '#adlib'].forEach(id => { $(id).hidden = L.mode !== 'rap'; }); $('#adlib').hidden = L.mode !== 'rap' || !!L.rapfix;
-  ['#harmony', '#chorus', '#hold'].forEach(id => { $(id).hidden = L.mode !== 'sing'; });
+  ['#harmony', '#chorus', '#hold'].forEach(id => { $(id).hidden = !isSing(L); });
   $('#voicebox').hidden = ['fit', 'chop', 'inst', 'band', 'beat'].includes(L.mode);
   $('#whatnow').textContent = (modes.find(m => m.id === L.mode) || {name:''}).name; $('#voicenow').textContent = (VOICES[L.voice] || VOICES[0]).name;
   $('#instopts').hidden = L.mode !== 'inst' && L.mode !== 'band';
