@@ -189,8 +189,10 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
     <div class="chips" style="margin-bottom:0">
       <button class="btn small" id="echo" aria-pressed="false">🏔️ Echo</button>
       <button class="btn small" id="mute">😴 Sleep</button>
+      <button class="btn small" id="trim">✂️ Trim</button>
       <button class="btn small" id="remove">Remove</button>
     </div>
+    <label class="slide" style="margin:12px 0 0">🔊 Volume <input type="range" id="lvol" min="0" max="150" value="100"></label>
   </section>
 
   <details class="panel band" id="whatbox" open hidden>
@@ -234,13 +236,17 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 
   <div class="recwrap">
     <div class="chips" id="kinds" style="justify-content:center;margin-bottom:10px" aria-label="What to record"></div>
-    <div class="chips" style="justify-content:center;margin-bottom:26px"><button class="btn small" id="micready" aria-pressed="false">🎤 Mic ready: off</button></div>
+    <div class="chips" style="justify-content:center;margin-bottom:26px"><button class="btn small" id="micready" aria-pressed="false">🎤 Mic ready: off</button><button class="btn small" id="countin" aria-pressed="false">🥁 Count-in: off</button></div>
     <button id="rec" aria-label="Hold to record your voice">
       <svg class="ring" viewBox="0 0 160 160" aria-hidden="true"><circle cx="80" cy="80" r="74"/></svg>
       <svg class="mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
       <span id="reclabel">Hold to record</span>
     </button>
     <p id="status" aria-live="polite"></p>
+    <div class="chips" style="justify-content:center;margin:0">
+      <button class="btn small on" id="undo" hidden>↩ Undo</button>
+      <button class="btn small" id="idea">💡 What should I say?</button>
+    </div>
   </div>
 
   <details class="panel band" id="noisebox">
@@ -322,6 +328,25 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       <button class="btn small" id="forget" hidden>Delete all</button>
       <button class="btn small on" id="mclose">Close</button>
     </div>
+    <p class="who" style="margin:16px 0 8px">Back up: copy every saved song into one file, to keep safe or move to another device. The file contains the recorded voices, so only pass it to people who are happy to be heard.</p>
+    <div class="row" style="justify-content:flex-start">
+      <button class="btn small" id="backup">⬇️ Back up to a file</button>
+      <button class="btn small" id="restore">⬆️ Restore from a file</button>
+      <input type="file" id="restorefile" accept=".json,application/json" hidden>
+    </div>
+  </dialog>
+
+  <dialog id="trimdlg" aria-labelledby="ttitle">
+    <h2 id="ttitle">Trim this recording</h2>
+    <p class="who">Move the sliders to cut off the start or the end. The bright part is what stays.</p>
+    <canvas id="trimwave" height="72" style="width:100%;display:block;margin-bottom:10px"></canvas>
+    <label class="slide" style="font-weight:800">Start <input type="range" id="trima" min="0" max="1000" value="0"></label>
+    <label class="slide" style="font-weight:800">End <input type="range" id="trimb" min="0" max="1000" value="1000"></label>
+    <div class="row">
+      <button class="btn small" id="trimplay">▶ Hear it</button>
+      <button class="btn small" id="trimcancel">Cancel</button>
+      <button class="btn small on" id="trimok">Trim</button>
+    </div>
   </dialog>
 
   <dialog id="consent" aria-labelledby="ctitle">
@@ -345,7 +370,7 @@ dialog .row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 <script>
 (() => {
 const $ = s => document.querySelector(s);
-const VERSION = '1.30.0';   // bump this with each release
+const VERSION = '1.31.0';   // bump this with each release
 
 /* Patterns are 16 steps per bar. Drums: x = hit. Bass: semitones above the chord root (base 36, so c = octave).
    ch: x = short stab, X = held chord. arp: chord-tone index. prog: 4 bars of [root offset, chord type]. */
@@ -564,7 +589,8 @@ const VOICES = [
   {name:'Ghost',icon:'👻',rate:.9,shift:0,sp:.9,vib:[2.2,.004],hall:1,tone:.55},
   {name:'Radio',icon:'📻',rate:1,shift:0,filt:['bandpass',1600,1.4],drive:true,gain:1.5},
   {name:'Underwater',icon:'🫧',rate:1,shift:0,tone:-.8,vib:[1.3,.005],gain:1.6},
-  {name:'Backwards',icon:'⏪',rate:1,shift:0,rev:true}
+  {name:'Backwards',icon:'⏪',rate:1,shift:0,rev:true},
+  {name:'Vocoder',icon:'🎚️',rate:1,shift:0,voc:true}
 ];
 /* Voice tweaks: every voice is a starting set of these values, and the sliders change them for one monster. */
 const pct = v => Math.round(v * 100) + '%';
@@ -586,7 +612,7 @@ function voiceFx(i){
 const fxOf = L => L.fx || (L.fx = voiceFx(L.voice));
 const rawRate = L => { const F = fxOf(L); return F.speed * Math.pow(2, F.pitch / 12); };   // untuned playback: pitch and speed move together
 const isSing = L => L.mode === 'sing' || L.mode === 'sing2';
-const MODES = [{name:'Sing',icon:'🎵',id:'sing'},{name:'Sing 2',icon:'🎙️',id:'sing2'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Rap',icon:'🧢',id:'rap'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'Band',icon:'🎺',id:'band'},{name:'Beat',icon:'🥁',id:'beat'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
+const MODES = [{name:'Sing 2',icon:'🎙️',id:'sing2'},{name:'Sing',icon:'🎵',id:'sing'},{name:'Auto-tune',icon:'🎤',id:'tune'},{name:'Rap',icon:'🧢',id:'rap'},{name:'Instrument',icon:'🎹',id:'inst'},{name:'Band',icon:'🎺',id:'band'},{name:'Beat',icon:'🥁',id:'beat'},{name:'As recorded',icon:'🗣️',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const MODES_MUSIC = [{name:'Fit to beat',icon:'🎯',id:'fit'},{name:'Chop up',icon:'✂️',id:'chop'},{name:'As recorded',icon:'📼',id:'plain'},{name:'Loop',icon:'🔁',id:'loop'}];
 const KINDS = [{name:'Voice',icon:'🗣️',id:'voice',secs:10},{name:'Music',icon:'🎸',id:'music',secs:16}];
 const INSTS = [
@@ -929,10 +955,47 @@ function buildBeat(L, sd){
   return {period, ev};
 }
 /*ENDDSP*/
-function tuned(T, si, midi, kind, from, fill, hold){
-  const key = si + '/' + midi + (kind ? '/' + kind + '/' + from : '') + (fill ? '/f' + Math.round(fill * 50) + (hold ? 'h' : '') : ''); let b = T.cache.get(key);
+/* Vocoder: the voice doesn't sound itself; it shapes a bright synth note instead. The voice and the synth are each
+   split into 14 bands from low to high. However loud the voice is in a band at each moment, that is how loud the
+   synth's same band is made. The words come through, but the sound is all synth: the glossy "talking keyboard". */
+function vocode(d, sr, f){
+  const n = d.length, out = new Float32Array(n), car = new Float32Array(n), k = 1 - Math.exp(-2 * Math.PI * 35 / sr);
+  for (let i = 0, p1 = 0, p2 = 0; i < n; i++){                // the synth: two saw waves an octave apart, plus hiss for s and t sounds
+    p1 += f / sr; p1 -= Math.floor(p1); p2 += f * 2.006 / sr; p2 -= Math.floor(p2);
+    car[i] = (2 * p1 - 1) * .6 + (2 * p2 - 1) * .25 + (Math.random() * 2 - 1) * .2;
+  }
+  for (let b = 0; b < 14; b++){
+    const fc = 180 * Math.pow(7200 / 180, b / 13), w = 2 * Math.PI * fc / sr, al = Math.sin(w) / 10, a0 = 1 + al;
+    const b0 = al / a0, a1 = -2 * Math.cos(w) / a0, a2 = (1 - al) / a0;        // band-pass, the same for voice and synth
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0, u1 = 0, u2 = 0, v1 = 0, v2 = 0, env = 0;
+    for (let i = 0; i < n; i++){
+      const y = b0 * (d[i] - x2) - a1 * y1 - a2 * y2; x2 = x1; x1 = d[i]; y2 = y1; y1 = y;
+      const v = b0 * (car[i] - u2) - a1 * v1 - a2 * v2; u2 = u1; u1 = car[i]; v2 = v1; v1 = v;
+      env += (Math.abs(y) - env) * k;
+      out[i] += v * env;
+    }
+  }
+  let ei = 0, eo = 0;
+  for (let i = 0; i < n; i++){ ei += d[i] * d[i]; eo += out[i] * out[i]; }
+  const g = eo ? Math.min(40, Math.sqrt(ei / eo)) : 1;         // bring it back to the loudness of the voice
+  for (let i = 0; i < n; i++) out[i] *= g;
+  return out;
+}
+/* A whole take through the vocoder, on the key note nearest the voice (for As recorded and Loop). Kept per key. */
+function rawBuf(L){
+  if (!(VOICES[L.voice] || {}).voc || !L.take || !ctx) return L.buf;
+  const note = snap(L.take.center + fxOf(L).pitch, [style.key % 12]);
+  if (!L.vcache || L.vcache.note !== note){
+    const d = vocode(L.buf.getChannelData(0), L.buf.sampleRate, mtof(note)), b = ctx.createBuffer(1, d.length, L.buf.sampleRate);
+    b.getChannelData(0).set(d); L.vcache = {note, b};
+  }
+  return L.vcache.b;
+}
+function tuned(T, si, midi, kind, from, fill, hold, voc){
+  const key = si + '/' + midi + (kind ? '/' + kind + '/' + from : '') + (fill ? '/f' + Math.round(fill * 50) + (hold ? 'h' : '') : '') + (voc ? '/v' + voc : ''); let b = T.cache.get(key);
   if (!b){
-    const d = tuneData(T, si, midi, kind, from, fill, hold);
+    let d = tuneData(T, si, midi, kind, from, fill, hold);
+    if (voc){ const ld = d.lead; d = vocode(d, T.sr, mtof(voc)); d.lead = ld; }   // voc = the note the vocoder's synth plays
     b = ctx.createBuffer(1, Math.max(1, d.length), T.sr); b.getChannelData(0).set(d); b.lead = d.lead || 0;
     if (T.cache.size > Math.max(300, T.segs.length * 8)) T.cache.clear();   // keep memory in check on phones
     T.cache.set(key, b);
@@ -1133,18 +1196,20 @@ function noise(t, dur, type, freq, peak, q){
   s.connect(f); f.connect(g); g.connect(beatBus);
   s.start(t, Math.random() * .5); s.stop(t + dur + .02);
 }
-function kick(t){
+function kick(t, v){
+  v = v == null ? 1 : v;
   const o = ctx.createOscillator(), g = ctx.createGain();
   o.frequency.setValueAtTime(165, t); o.frequency.exponentialRampToValueAtTime(48, t + .11);
-  decay(g, t, .95, .32); o.connect(g); g.connect(beatBus); o.start(t); o.stop(t + .34);
+  decay(g, t, Math.max(.001, .95 * v), .32); o.connect(g); g.connect(beatBus); o.start(t); o.stop(t + .34);
 }
-function snare(t){
-  noise(t, .17, 'highpass', 1400, .5);
+function snare(t, v){
+  v = v == null ? 1 : v;
+  noise(t, .17, 'highpass', 1400, Math.max(.001, .5 * v));
   const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'triangle';
   o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(140, t + .08);
-  decay(g, t, .4, .1); o.connect(g); g.connect(beatBus); o.start(t); o.stop(t + .12);
+  decay(g, t, Math.max(.001, .4 * v), .1); o.connect(g); g.connect(beatBus); o.start(t); o.stop(t + .12);
 }
-function hat(t, v, open){ noise(t, open ? .26 : .045, 'highpass', 7500, .2 * v); }
+function hat(t, v, open){ noise(t, open ? .26 : .045, 'highpass', 7500, Math.max(.001, .2 * v)); }
 function clap(t){ noise(t, .02, 'bandpass', 1500, .45, 1.2); noise(t + .012, .02, 'bandpass', 1500, .45, 1.2); noise(t + .024, .16, 'bandpass', 1500, .45, 1.2); }
 function tom(t, f){
   const o = ctx.createOscillator(), g = ctx.createGain();
@@ -1336,7 +1401,7 @@ function scheduleStep(n, t){
     if (e){
       const segs = lead.take.segs, si = lead.next++ % segs.length, dur = e.len * sd;
       if (segs[si].end && segs.length > 1) lead.restBar = bar8;
-      const b1 = tuned(lead.take, si, 0, 'raw', null, dur * .97, false);
+      const b1 = tuned(lead.take, si, 0, 'raw', null, dur * .97, false, VOICES[lead.voice].voc ? snap(lead.take.center + fxOf(lead).pitch, [S.key % 12]) : 0);
       choke(lead, t);
       playBuf(lead, b1, t, 1, ps % 4 === 0 ? .8 : .65, dur, 0, b1.lead);
       if (lead.adlib !== false && (e.last || lead.restBar === bar8) && s + 3 < BAR) playBuf(lead, b1, t + sd * 2, 1, .28, dur, 0, b1.lead);
@@ -1358,11 +1423,11 @@ function scheduleStep(n, t){
     const ix = clamp(sc.mid + e.idx, 0, sc.notes.length - 1);
     const midi = e.strong ? snap(sc.notes[ix], chordPcs) : sc.notes[ix];   // strong notes land on a note of the chord
     const dur = e.len * sd, hold = lead.hold !== false, how = lead.mode === 'sing2' ? 'ps' : undefined;   // Sing 2: natural-voice tuning
-    const b1 = tuned(lead.take, si, midi, how, null, dur * .95, hold);
+    const b1 = tuned(lead.take, si, midi, how, null, dur * .95, hold, VOICES[lead.voice].voc ? midi : 0);
     choke(lead, t);
     playBuf(lead, b1, t, 1, .6, dur, 0, b1.lead);
     if (lead.harmony || inCho){                               // the chorus always gets a harmony
-      const hm = snap(midi + 3.5, chordPcs), b2 = tuned(lead.take, si, hm, how, null, dur * .95, hold);
+      const hm = snap(midi + 3.5, chordPcs), b2 = tuned(lead.take, si, hm, how, null, dur * .95, hold, VOICES[lead.voice].voc ? hm : 0);
       if (hm !== midi) playBuf(lead, b2, t, 1, .35, dur, 0, b2.lead);
     }
     if (parts.tune) tone(t, midi < 58 ? midi + 12 : midi, dur * .9, 'triangle', .1, 2600);
@@ -1374,7 +1439,7 @@ function scheduleStep(n, t){
   }
   layers.forEach(L => {
     if (L.mode === 'loop' && !off(L) && RHYTHMS[L.rhythm].fn(ps, bar)){
-      choke(L, t); playBuf(L, L.buf, t, rawRate(L), 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rawRate(L) / sd);
+      choke(L, t); playBuf(L, rawBuf(L), t, rawRate(L), 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rawRate(L) / sd);
     }
   });
   /* as recorded: the whole take in its own timing, repeating every 1, 2, 4, 8 or 16 bars, whichever it fits in */
@@ -1382,7 +1447,7 @@ function scheduleStep(n, t){
     if (L.mode !== 'plain' || off(L) || L.b0 == null) return;
     const rate = rawRate(L), need = L.buf.duration / rate / (sd * BAR), bars = need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16;
     if (pos(L) % (bars * BAR)) return;
-    choke(L, t); playBuf(L, L.buf, t, rate, 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rate / sd);
+    choke(L, t); playBuf(L, rawBuf(L), t, rate, 1); vis.push({t, id:L.id}); mark('L' + L.id, 0, L.buf.duration / rate / sd);
   });
   /* Auto-tune: the take keeps its own order and roughly its own rhythm, but each syllable is nudged onto the nearest
      step of the beat (vowel on the step), shortened if it would run into the next one, and tuned.
@@ -1403,7 +1468,7 @@ function scheduleStep(n, t){
         const off = g.a / T.sr - from;
         if (off < 0 || off >= sd) return;                     // only the syllables that begin during this step
         const m = g.med ? snap(T.center + clamp((69 + 12 * Math.log2(g.med / 440) - T.center) * 2.2, -9, 9) + P, five) : 60;
-        playBuf(L, tuned(T, i, m, undefined, null, (g.b - g.a) / T.sr * 2 + 1, false), t + off, 1, .8);
+        playBuf(L, tuned(T, i, m, undefined, null, (g.b - g.a) / T.sr * 2 + 1, false, VOICES[L.voice].voc ? m : 0), t + off, 1, .8);
         vis.push({t: t + off, id:L.id}); mark('L' + L.id, g.med ? m : 0, (g.b - g.a) / T.sr / sd);
       });
       return;
@@ -1414,7 +1479,7 @@ function scheduleStep(n, t){
     if (at === 0) L.prevNote = null;
     if (!e) return;
     if (fix){
-      const g = L.take.segs[e.i], room = e.gap * sd, b1 = tuned(L.take, e.i, 0, 'raw', null, room * .97, false);
+      const g = L.take.segs[e.i], room = e.gap * sd, b1 = tuned(L.take, e.i, 0, 'raw', null, room * .97, false, VOICES[L.voice].voc ? snap(L.take.center + fxOf(L).pitch, [S.key % 12]) : 0);
       choke(L, t); playBuf(L, b1, t, 1, ps % 4 === 0 ? .8 : .65, (g.b - g.vo) / L.take.sr > room ? room : 0, 0, b1.lead);
       vis.push({t, id:L.id}); mark('L' + L.id, 0, Math.min(e.gap, (g.b - g.vo) / L.take.sr / sd)); return;
     }
@@ -1428,11 +1493,12 @@ function scheduleStep(n, t){
       else { m = snap(c + clamp((sung - c) * 2.2, -9, 9) + P, five); if (ps % 4 === 0) m = snap(m, chordPcs); }
     }
     const kind = A === 'nat' || A === 'glide' ? A : undefined, room = e.gap * sd, natural = (g.b - g.vo) / L.take.sr;
-    const b1 = tuned(L.take, e.i, m, kind, A === 'glide' && L.prevNote != null ? L.prevNote : null, room * .97, false);
+    const vz = VOICES[L.voice].voc;
+    const b1 = tuned(L.take, e.i, m, kind, A === 'glide' && L.prevNote != null ? L.prevNote : null, room * .97, false, vz ? m : 0);
     choke(L, t);
     playBuf(L, b1, t, 1, .8, natural > room ? room : 0, 0, b1.lead);
     if (A === 'choir' && g.med){
-      const up = tuned(L.take, e.i, snap(m + 3.5, five), undefined, null, room * .97, false), dn = tuned(L.take, e.i, m - 12, undefined, null, room * .97, false);
+      const um = snap(m + 3.5, five), up = tuned(L.take, e.i, um, undefined, null, room * .97, false, vz ? um : 0), dn = tuned(L.take, e.i, m - 12, undefined, null, room * .97, false, vz ? m - 12 : 0);
       playBuf(L, up, t, 1, .4, natural > room ? room : 0, 0, up.lead); playBuf(L, dn, t, 1, .4, natural > room ? room : 0, 0, dn.lead);
     }
     if (g.med) L.prevNote = m;
@@ -1446,11 +1512,12 @@ function scheduleStep(n, t){
     const need = L.buf.duration / (sd * BAR), period = (need <= 1 ? 1 : need <= 2 ? 2 : need <= 4 ? 4 : need <= 8 ? 8 : 16) * BAR, I = INSTS[L.inst || 0];
     L.notes.forEach(o => {
       if (Math.round(o.at / sd) % period !== n % period) return;
-      if (o.drum){ if (o.drum === 'k') kick(t); else if (o.drum === 's') snare(t); else hat(t, 1); mark('L' + L.id, DRUM_Y[o.drum], 1); }
+      const lv = L.vol == null ? 1 : L.vol;
+      if (o.drum){ if (o.drum === 'k') kick(t, lv); else if (o.drum === 's') snare(t, lv); else hat(t, lv); mark('L' + L.id, DRUM_Y[o.drum], 1); }
       else {
         let m = o.midi; while (m < 55) m += 12; while (m > 84) m -= 12;
         mark('L' + L.id, m, o.dur / sd);
-        const g = tone(t, m, clamp(o.dur, sd * 1.5, sd * 16), I.wave, I.vol, I.cut, I.att, sampleBus);
+        const g = tone(t, m, clamp(o.dur, sd * 1.5, sd * 16), I.wave, Math.max(.0002, I.vol * lv), I.cut, I.att, sampleBus);
         if (L.echo) g.connect(echoIn);
       }
       vis.push({t, id:L.id});
@@ -1468,7 +1535,7 @@ function scheduleStep(n, t){
       else {
         let m = e.m; while (m < 60) m += 12; while (m > 84) m -= 12;
         mark('L' + L.id, m, e.len);
-        const g = tone(t, m, clamp(e.len, 1.5, 16) * sd, I.wave, I.vol, I.cut, I.att, sampleBus);
+        const g = tone(t, m, clamp(e.len, 1.5, 16) * sd, I.wave, Math.max(.0002, I.vol * (L.vol == null ? 1 : L.vol)), I.cut, I.att, sampleBus);
         if (L.echo) g.connect(echoIn); lead = true;
       }
     });
@@ -1479,7 +1546,8 @@ function scheduleStep(n, t){
     if (L.tkey !== tempo + '|' + sigIx){ L.tkey = tempo + '|' + sigIx; L.beat = buildBeat(L, sd); }
     const d = L.beat.ev[n % L.beat.period];
     if (!d) return;
-    if (d === 'k') kick(t); else if (d === 's') snare(t); else hat(t, 1);
+    const lv = L.vol == null ? 1 : L.vol;
+    if (d === 'k') kick(t, lv); else if (d === 's') snare(t, lv); else hat(t, lv);
     vis.push({t, id:L.id}); mark('L' + L.id, DRUM_Y[d], 1);
   });
   /* recorded music, resampled: played faster or slower so it lasts a whole number of bars (or beats) and loops in time.
@@ -1546,7 +1614,7 @@ function playBuf(L, buf, t, rate, vol, dur, off, lead){
     const w = ctx.createWaveShaper(); w.curve = curve; into(w);
   }
   if (F.wob > 0){ const depth = F.wob / 1000, d = ctx.createDelay(.05); d.delayTime.value = depth + .002; lfo(F.wobHz, depth, d.delayTime); into(d); }
-  const g = ctx.createGain(); g.gain.value = vol * (V.gain || 1); node.connect(g);
+  const g = ctx.createGain(); g.gain.value = vol * (V.gain || 1) * (L.vol == null ? 1 : L.vol); node.connect(g);
   g.connect(sampleBus); if (L.echo) g.connect(echoIn);
   if (F.room > 0){ const send = ctx.createGain(); send.gain.value = F.room; g.connect(send); send.connect(hallIn); }
   if (lead){                                                 // start early by the length of the consonant, so the vowel lands on the beat
@@ -1712,6 +1780,19 @@ function showDiag(){
     ' | mode: ' + (navigator.audioSession ? navigator.audioSession.type : 'not supported') + ' | mic: ' + diag.mic + ' | last take: ' + diag.take;
 }
 const HOLD_MSG = 'Keep holding the button while you talk, then let go.';
+/* Count-in: four clicks at the song's speed before recording starts, so a take can begin in time. The clicks go
+   straight to the speaker, so they are heard even when the song is stopped. */
+let countIn = false;
+function countDown(){
+  const beat = stepDur() * BEAT, t0 = ctx.currentTime + .03;
+  for (let i = 0; i < 4; i++){
+    const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'square'; o.frequency.value = i ? 1000 : 1500;
+    g.gain.setValueAtTime(.2, t0 + i * beat); g.gain.exponentialRampToValueAtTime(.001, t0 + i * beat + .06);
+    o.connect(g); g.connect(master); o.start(t0 + i * beat); o.stop(t0 + i * beat + .08);
+    setTimeout(() => { if (recState === 'asking') $('#reclabel').textContent = String(4 - i); }, i * beat * 1000);
+  }
+  return new Promise(r => setTimeout(r, 4 * beat * 1000));
+}
 async function beginRec(){
   holding = true;
   if (recState !== 'idle') return;
@@ -1719,6 +1800,7 @@ async function beginRec(){
   recState = 'asking'; drawRec();
   try {
     initAudio(); ctx.resume().catch(() => {});      // don't wait: the press hasn't finished, so the phone may not answer yet
+    const counted = countIn ? countDown() : null;            // the mic opens while the count runs
     if (!navigator.mediaDevices || !window.MediaRecorder) throw new Error('unsupported');
     takeKind = KINDS[recKind].id;
     if (warm && takeKind === 'voice') stream = warm;         // mic already open: no waiting
@@ -1732,6 +1814,7 @@ async function beginRec(){
     try { const st = stream.getAudioTracks()[0].getSettings(); diag.mic = 'echoCancel ' + st.echoCancellation + ', rate ' + st.sampleRate; } catch(e){}
     }
     ctx.resume().catch(() => {});
+    if (counted) await counted;
   } catch(e){
     if (!warm) soundMode('playback');
     recState = 'idle'; drawRec();
@@ -1769,7 +1852,7 @@ async function recDone(){
     const ab = await new Blob(chunks, {type: rec.mimeType}).arrayBuffer();
     const raw = await new Promise((res, rej) => ctx.decodeAudioData(ab, res, rej));
     const buf = trim(raw);
-    if (buf) addLayer(buf, takeKind === 'music' ? 'fit' : 'sing', takeKind); else say("Couldn't hear that one. Try again, a bit louder!");
+    if (buf) addLayer(buf, takeKind === 'music' ? 'fit' : 'sing2', takeKind);   // new voice takes start in Sing 2 else say("Couldn't hear that one. Try again, a bit louder!");
   } catch(e){ say("That recording didn't work. Hold the button to try again."); }
   chunks = []; recState = 'idle'; drawRec(); showDiag();
 }
@@ -1830,7 +1913,7 @@ function addLayer(buf, mode, kind){
   drawLayers();
   const singers = layers.filter(isSing).length;
   if (kind === 'music') say('Your music is looping in time with the beat! Tap the monster to chop it up.');
-  else say(mode === 'sing' ? (singers > 1 ? 'Now your monsters take turns singing!' : "That's your song! Tap the monster to change it, or try the other choices.")
+  else say(mode === 'sing' || mode === 'sing2' ? (singers > 1 ? 'Now your monsters take turns singing!' : "That's your song! Tap the monster to change it, or try the other choices.")
                       : 'Added! Tap the monster to change it.');
   if (!playing) start();
 }
@@ -1960,6 +2043,7 @@ function drawPanel(){
   drawTweaks(L);
   [['#harmony', L.harmony], ['#echo', L.echo], ['#chorus', !!L.chorus], ['#hold', L.hold !== false], ['#rapfix', !!L.rapfix], ['#adlib', L.adlib !== false]].forEach(([id, v]) => { $(id).classList.toggle('on', v); $(id).setAttribute('aria-pressed', v); });
   $('#mute').textContent = L.muted ? '⏰ Wake up' : '😴 Sleep';
+  $('#lvol').value = Math.round((L.vol == null ? 1 : L.vol) * 100); $('#trim').hidden = L.buf.duration < .4;
 }
 function drawTweaks(L){
   const box = $('#tweaks'), rows = $('#tweakrows'), F = fxOf(L);
@@ -2027,10 +2111,79 @@ $('#mute').onclick = () => {
   const L = sel(); if (!L) return;
   L.muted = !L.muted; restart(L); drawLayers();
 };
+/* Undo: one step back for the things that are easy to do by accident. */
+let undo = null, undoTimer = null;
+function offerUndo(data, label){
+  undo = data; $('#undo').hidden = false; $('#undo').textContent = '↩ Undo ' + label;
+  clearTimeout(undoTimer); undoTimer = setTimeout(() => { undo = null; $('#undo').hidden = true; }, 30000);
+}
+function freshen(L){ L.tq = L.qkey = L.nkey = L.bkey = L.tkey = L.vcache = null; arrange(L); restart(L); }   // forget anything worked out from the old sound
+$('#undo').onclick = () => {
+  const u = undo; undo = null; $('#undo').hidden = true; clearTimeout(undoTimer);
+  if (!u) return;
+  if (u.type === 'remove' && layers.length < MAX_LAYERS){ layers.splice(Math.min(u.index, layers.length), 0, u.layer); u.layer.cur = []; u.layer.b0 = null; selId = u.layer.id; say('Your monster is back.'); }
+  else if (u.type === 'clear'){ layers = u.layers; layers.forEach(L => { L.cur = []; L.b0 = null; }); curId = u.curId; curName = u.curName; say('Everything is back.'); }
+  else if (u.type === 'trim'){ const L = layers.find(l => l.id === u.id); if (L){ L.buf = u.buf; L.take = u.take; freshen(L); say('The trim is undone.'); } }
+  drawLayers();
+};
 $('#remove').onclick = () => {
   const L = sel(); if (!L) return;
   if (ctx) choke(L, ctx.currentTime);
-  layers = layers.filter(l => l !== L); selId = null; drawLayers(); say('');
+  offerUndo({type:'remove', layer:L, index:layers.indexOf(L)}, 'remove');
+  layers = layers.filter(l => l !== L); selId = null; drawLayers(); say('Monster removed.');
+};
+$('#lvol').oninput = e => { const L = sel(); if (L) L.vol = e.target.value / 100; };
+$('#countin').onclick = e => { countIn = !countIn; e.target.textContent = '🥁 Count-in: ' + (countIn ? 'on' : 'off'); e.target.classList.toggle('on', countIn); e.target.setAttribute('aria-pressed', countIn); };
+const IDEAS = ['My dog is the best dog in the whole wide world', 'I had toast for breakfast and it was amazing', 'Nobody knows where my other sock went',
+  'I can jump higher than a kangaroo, probably', 'There is a dinosaur hiding under my bed', 'Today I am the boss of everything',
+  'Spaghetti, spaghetti, wibbly wobbly spaghetti', 'My teacher is secretly a superhero', 'I do not want to tidy my room, no thank you',
+  'One, two, three, four, who is knocking at the door', 'The cat sat on the mat and then it did a dance', 'I love my mum and I love my dad and I love ice cream',
+  'Wiggle your fingers and wiggle your toes', 'It is raining, it is pouring, and my wellies are full of water', 'Bananas are yellow and so is the sun',
+  'I am a robot, beep boop, take me to your leader', 'Grandma makes the best pancakes on the planet', 'Stomp like an elephant, hop like a frog',
+  'My brother thinks he is funny but I am funnier', 'Good night moon, good night stars, good night stinky socks', 'Pizza for breakfast, pizza for lunch, pizza for tea',
+  'I found a snail and I named him Speedy', 'Fish and chips at the beach with sand in my shoes', 'Happy birthday to me, I am as old as a tree'];
+$('#idea').onclick = () => say('Try saying: "' + pick(IDEAS) + '"');
+
+/* Trim: cut the start or end off a take. The sliders are in thousandths of the take's length. */
+let trimSrc = null;
+function drawTrim(){
+  const L = sel(); if (!L) return;
+  const cv = $('#trimwave'), dpr = window.devicePixelRatio || 1, w = cv.clientWidth || 300, hgt = 72, d = L.buf.getChannelData(0);
+  cv.width = Math.round(w * dpr); cv.height = Math.round(hgt * dpr);
+  const c = cv.getContext('2d'), css = getComputedStyle(document.documentElement), a = $('#trima').value / 1000, b = $('#trimb').value / 1000;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, w, hgt);
+  const step = Math.max(1, Math.floor(d.length / w));
+  for (let px = 0; px < w; px++){
+    let pk = 0; for (let i = px * step, e = Math.min(d.length, i + step); i < e; i += 8){ const v = Math.abs(d[i]); if (v > pk) pk = v; }
+    const inside = px / w >= a && px / w <= b;
+    c.globalAlpha = inside ? 1 : .25; c.fillStyle = inside ? L.look.color : (css.getPropertyValue('--muted').trim() || '#888');
+    c.fillRect(px, hgt / 2 - pk * hgt / 2, 1, Math.max(1, pk * hgt));
+  }
+  c.globalAlpha = 1;
+}
+function trimRange(L){ const n = L.buf.length, a = Math.floor(n * $('#trima').value / 1000), b = Math.floor(n * $('#trimb').value / 1000); return [a, Math.max(b, a + 1)]; }
+function trimStop(){ if (trimSrc){ try { trimSrc.stop(); } catch(e){} trimSrc = null; } }
+$('#trim').onclick = async () => { const L = sel(); if (!L) return; await wake(); $('#trima').value = 0; $('#trimb').value = 1000; $('#trimdlg').showModal(); drawTrim(); };
+$('#trima').oninput = () => { if (+$('#trima').value > $('#trimb').value - 30) $('#trima').value = $('#trimb').value - 30; drawTrim(); };
+$('#trimb').oninput = () => { if (+$('#trimb').value < +$('#trima').value + 30) $('#trimb').value = +$('#trima').value + 30; drawTrim(); };
+$('#trimplay').onclick = () => {
+  const L = sel(); if (!L || !ctx) return;
+  trimStop();
+  const [a, b] = trimRange(L), g = ctx.createGain(); g.gain.value = .7; g.connect(ctx.destination);   // straight to the speaker: the song may be stopped
+  trimSrc = ctx.createBufferSource(); trimSrc.buffer = L.buf; trimSrc.connect(g); trimSrc.start(0, a / L.buf.sampleRate, (b - a) / L.buf.sampleRate);
+};
+$('#trimcancel').onclick = () => { trimStop(); $('#trimdlg').close(); };
+$('#trimok').onclick = () => {
+  const L = sel(); trimStop(); $('#trimdlg').close(); if (!L) return;
+  const [a, b] = trimRange(L), sr = L.buf.sampleRate, len = b - a;
+  if (len < sr * .1 || (a === 0 && b >= L.buf.length - 1)){ say('Nothing was trimmed.'); return; }
+  const nb = ctx.createBuffer(1, len, sr), o = nb.getChannelData(0), fi = Math.floor(sr * .004), fo = Math.floor(sr * .02);
+  o.set(L.buf.getChannelData(0).subarray(a, b));
+  for (let i = 0; i < fi; i++) o[i] *= i / fi;
+  for (let i = 0; i < fo; i++) o[len - 1 - i] *= i / fo;
+  offerUndo({type:'trim', id:L.id, buf:L.buf, take:L.take}, 'trim');
+  L.buf = nb; if (L.take) L.take = analyse(o, sr);
+  freshen(L); drawLayers(); say('Trimmed to ' + (len / sr).toFixed(1) + ' seconds.');
 };
 let clearArmed = null;
 $('#clear').onclick = e => {
@@ -2041,6 +2194,7 @@ $('#clear').onclick = e => {
   }
   clearTimeout(clearArmed); clearArmed = null; e.target.textContent = 'Start over';
   if (ctx) layers.forEach(L => choke(L, ctx.currentTime));
+  if (layers.length) offerUndo({type:'clear', layers, curId, curName}, 'start over');
   layers = []; selId = null; curId = null; curName = ''; shufflePack(); drawLayers(); say('');   // new session, new monsters
 };
 
@@ -2101,7 +2255,7 @@ async function writeSong(asNew){
     entry.name = name; entry.style = style.name; entry.at = new Date().toISOString();
     await dbSet('song:' + entry.id, {v:1, style:style.name, variant:styleVar, tempo, parts:Object.assign({}, parts), keySound, form:songOn, sig:sigIx, oct:octIx, phase:phaseIx,
       layers: layers.map(L => ({sr:L.buf.sampleRate, data:L.buf.getChannelData(0).slice(), mode:L.mode, rhythm:L.rhythm,
-        voice:L.voice, fx:Object.assign({}, fxOf(L)), harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0, tstyle:L.tstyle || 0, chorus:!!L.chorus, hold:L.hold !== false, rapfix:!!L.rapfix, adlib:L.adlib !== false}))});
+        voice:L.voice, vol:L.vol == null ? 1 : L.vol, fx:Object.assign({}, fxOf(L)), harmony:L.harmony, echo:L.echo, muted:L.muted, seed:L.seed, look:L.look, kind:L.kind, inst:L.inst || 0, tstyle:L.tstyle || 0, chorus:!!L.chorus, hold:L.hold !== false, rapfix:!!L.rapfix, adlib:L.adlib !== false}))});
     await dbSet('index', ix);
     curId = entry.id; curName = name;
     say('Saved "' + name + '" on this device.');
@@ -2116,7 +2270,7 @@ async function loadSong(id){
     layers = s.layers.map(o => {
       const buf = ctx.createBuffer(1, o.data.length, o.sr); buf.getChannelData(0).set(o.data);
       const kind = o.kind || 'voice';
-      const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice, fx:Object.assign(voiceFx(o.voice), o.fx || {}),
+      const L = {id: uid++, buf, kind, take: kind === 'music' ? null : analyse(buf.getChannelData(0), o.sr), mode:o.mode, rhythm:o.rhythm, voice:o.voice, vol:o.vol == null ? 1 : o.vol, fx:Object.assign(voiceFx(o.voice), o.fx || {}),
         harmony:o.harmony, echo:o.echo, muted:o.muted, seed:o.seed, look: typeof o.look === 'number' ? oldLook(o.look) : o.look, inst:o.inst || 0, tstyle:o.tstyle || 0, chorus:!!o.chorus, hold:o.hold !== false, rapfix:!!o.rapfix, adlib:o.adlib !== false, cur:[]};
       arrange(L); return L;
     });
@@ -2135,6 +2289,40 @@ function twoTap(btn, label, confirmLabel, action){
     if (!armed){ btn.textContent = confirmLabel; armed = setTimeout(() => { armed = null; btn.textContent = label; }, 2500); return; }
     clearTimeout(armed); armed = null; btn.textContent = label; action();
   };
+}
+/* Back up and restore. Sound is stored in the file as 16-bit numbers in base64 text, which is about a third of the
+   size of writing the numbers out. Restoring adds songs; it never replaces or deletes the ones already saved. */
+const toB64 = f32 => { const i16 = new Int16Array(f32.length); for (let i = 0; i < f32.length; i++) i16[i] = Math.max(-32767, Math.min(32767, Math.round(f32[i] * 32767)));
+  const u8 = new Uint8Array(i16.buffer); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+const fromB64 = b64 => { const s = atob(b64), u8 = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+  const i16 = new Int16Array(u8.buffer), f32 = new Float32Array(i16.length); for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32767; return f32; };
+async function backupSongs(){
+  try {
+    const ix = await getIndex(); if (!ix.length){ say('There are no saved songs to back up yet.'); return; }
+    const songs = [];
+    for (const e of ix){ const s = await dbGet('song:' + e.id); if (s) songs.push({name:e.name, style:e.style, at:e.at, song:Object.assign({}, s, {layers: s.layers.map(l => Object.assign({}, l, {data: toB64(l.data)}))})}); }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({app:'loop-monsters', v:1, made:new Date().toISOString(), songs})], {type:'application/json'}));
+    a.download = 'loop-monsters-backup-' + new Date().toISOString().slice(0, 10) + '.json'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    say('Backed up ' + songs.length + (songs.length === 1 ? ' song' : ' songs') + ' to a file.');
+  } catch(e){ say(NO_SAVE); }
+}
+async function restoreSongs(file){
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || data.app !== 'loop-monsters' || !Array.isArray(data.songs)) throw new Error('not a backup');
+    if (!(await dbGet('consent'))){ say('Save a song first, so a grown-up can agree to keeping recordings on this device. Then restore.'); return; }
+    const ix = await getIndex(); let added = 0, skipped = 0;
+    for (const item of data.songs){
+      if (ix.length >= MAX_SONGS){ skipped++; continue; }
+      const id = 's' + Date.now().toString(36) + added;
+      await dbSet('song:' + id, Object.assign({}, item.song, {layers: item.song.layers.map(l => Object.assign({}, l, {data: fromB64(l.data)}))}));
+      ix.push({id, name: String(item.name || 'Restored song').slice(0, 24), style: item.style || item.song.style, at: item.at || new Date().toISOString()}); added++;
+    }
+    await dbSet('index', ix); await drawSongs();
+    say('Restored ' + added + (added === 1 ? ' song.' : ' songs.') + (skipped ? ' ' + skipped + ' did not fit: the limit is ' + MAX_SONGS + '.' : ''));
+  } catch(e){ say("That file isn't a Loop Monsters backup."); }
 }
 async function drawSongs(){
   const ix = await getIndex(), list = $('#songlist'); list.innerHTML = '';
@@ -2165,6 +2353,9 @@ $('#songs').onclick = async () => {
   try { await drawSongs(); $('#songsdlg').showModal(); } catch(e){ say(NO_SAVE); }
 };
 $('#mclose').onclick = () => $('#songsdlg').close();
+$('#backup').onclick = backupSongs;
+$('#restore').onclick = () => $('#restorefile').click();
+$('#restorefile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreSongs(f); };
 $('#scancel').onclick = () => $('#namedlg').close();
 $('#sgo').onclick = () => writeSong(false);
 $('#snew').onclick = () => writeSong(true);
@@ -2180,6 +2371,8 @@ twoTap($('#forget'), 'Delete all', 'Tap again to delete all', async () => {
 
 $('#ver').onclick = e => { if (e.target.dataset.open) delete e.target.dataset.open; else e.target.dataset.open = '1'; showDiag(); };
 showDiag();
+/* Works offline: a small helper file (sw.js) keeps a copy of the app on the device. Only on a real web address. */
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
 setSig(0); setTempo(style.bpm); setSong(false); drawBeats(); drawKinds(); drawBand(); drawLayers(); drawRec(); frame();
 })();
 </script>
